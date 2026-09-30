@@ -61,6 +61,7 @@ import 'package:PiliPlus/pages/setting/pages/font_setting.dart';
 import 'package:PiliPlus/pages/setting/pages/logs.dart';
 import 'package:PiliPlus/pages/setting/pages/play_speed_set.dart';
 import 'package:PiliPlus/pages/setting/view.dart';
+import 'package:PiliPlus/pages/short_video/view.dart';
 import 'package:PiliPlus/pages/settings_search/view.dart';
 import 'package:PiliPlus/pages/space_setting/view.dart';
 import 'package:PiliPlus/pages/sponsor_block/view.dart';
@@ -80,6 +81,8 @@ class Routes {
     GetPage(name: '/home', page: () => const HomePage()),
     // 热门
     GetPage(name: '/hot', page: () => const HotPage()),
+    // 竖屏视频
+    GetPage(name: '/shortVideo', page: () => const ShortVideoPage()),
     // 视频详情
     GetPage(name: '/videoV', page: () => const VideoDetailPageV()),
     //

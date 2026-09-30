@@ -33,9 +33,22 @@ android {
         targetSdk = 37
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+
+        ndk {
+            abiFilters += setOf("arm64-v8a")
+        }
     }
 
-    packagingOptions.jniLibs.useLegacyPackaging = true
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging = true
+            excludes += setOf(
+                "lib/armeabi-v7a/**",
+                "lib/x86/**",
+                "lib/x86_64/**",
+            )
+        }
+    }
 
     val keyProperties = Properties().also {
         val properties = rootProject.file("key.properties")

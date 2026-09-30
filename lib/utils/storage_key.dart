@@ -1,6 +1,20 @@
 // ignore_for_file: constant_identifier_names
 
 abstract final class SettingBoxKey {
+  static const shortVideoEnabled = 'shortVideoEnabled',
+      shortVideoAutoPlay = 'shortVideoAutoPlay',
+      shortVideoAutoNext = 'shortVideoAutoNext',
+      shortVideoPreload = 'shortVideoPreload',
+      shortVideoPersonalized = 'shortVideoPersonalized',
+      shortVideoOnlyVertical = 'shortVideoOnlyVertical',
+      shortVideoCellularPreload = 'shortVideoCellularPreload',
+      shortVideoMuted = 'shortVideoMuted',
+      shortVideoFill = 'shortVideoFill',
+      shortVideoHaptics = 'shortVideoHaptics',
+      shortVideoSwipeStyle = 'shortVideoSwipeStyle',
+      shortVideoFixedSpeedEnabled = 'shortVideoFixedSpeedEnabled',
+      shortVideoFixedSpeed = 'shortVideoFixedSpeed';
+
   static const String btmProgressBehavior = 'btmProgressBehavior',
       defaultVideoQa = 'defaultVideoQa',
       defaultVideoQaCellular = 'defaultVideoQaCellular',

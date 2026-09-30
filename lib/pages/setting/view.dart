@@ -74,6 +74,11 @@ class _SettingPageState extends State<SettingPage> {
       icon: Icon(Icons.style_outlined),
     ),
     _SettingsModel(
+      type: SettingType.shortVideoSetting,
+      subtitle: '竖屏开关、本地推荐、自动播放、预加载、滑动效果',
+      icon: Icon(Icons.swipe_vertical_outlined),
+    ),
+    _SettingsModel(
       type: SettingType.extraSetting,
       subtitle: '震动、搜索、收藏、ai、评论、代理、更新检查等',
       icon: Icon(Icons.extension_outlined),
@@ -124,6 +129,7 @@ class _SettingPageState extends State<SettingPage> {
                       .dynamicsSetting ||
                       .videoSetting ||
                       .playSetting ||
+                      .shortVideoSetting ||
                       .styleSetting ||
                       .extraSetting => CommonSetting(
                         settingType: _type,
@@ -156,6 +162,7 @@ class _SettingPageState extends State<SettingPage> {
           .dynamicsSetting ||
           .videoSetting ||
           .playSetting ||
+          .shortVideoSetting ||
           .styleSetting ||
           .extraSetting => CommonSetting(settingType: type),
           .webdavSetting => const WebDavSettingPage(),

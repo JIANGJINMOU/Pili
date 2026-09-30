@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:PiliPlus/common/assets.dart';
+import 'package:PiliPlus/pages/setting/widgets/fixed_speed_setting.dart';
 import 'package:PiliPlus/common/constants.dart';
 import 'package:PiliPlus/common/style.dart';
 import 'package:PiliPlus/common/widgets/cropped_image.dart';
@@ -913,24 +914,12 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
           menuPadding: EdgeInsets.zero,
           menuItemOuterPadding: EdgeInsets.zero,
           menuItemStateLayerColor: Colors.white,
-          itemBuilder: (context) {
-            return plPlayerController.speedList
-                .map(
-                  (double speed) => PopupMenuItem<double>(
-                    height: 35,
-                    padding: const EdgeInsets.only(left: 30),
-                    value: speed,
-                    onTap: () =>
-                        plPlayerController.setManualPlaybackSpeed(speed),
-                    child: Text(
-                      "${speed}X",
-                      style: const TextStyle(color: Colors.white, fontSize: 13),
-                      semanticsLabel: "$speed倍速",
-                    ),
-                  ),
-                )
-                .toList();
-          },
+          itemBuilder: (context) => playbackSpeedMenuItems(
+            currentRate: plPlayerController.playbackSpeed,
+            rates: plPlayerController.speedList,
+            showFixedSwitch: false,
+            onSelected: plPlayerController.setManualPlaybackSpeed,
+          ),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8),
             child: Text(

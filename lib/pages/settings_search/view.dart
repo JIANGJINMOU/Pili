@@ -11,6 +11,7 @@ import 'package:PiliPlus/pages/setting/models/privacy_settings.dart';
 import 'package:PiliPlus/pages/setting/models/recommend_settings.dart';
 import 'package:PiliPlus/pages/setting/models/style_settings.dart';
 import 'package:PiliPlus/pages/setting/models/video_settings.dart';
+import 'package:PiliPlus/pages/setting/models/short_video_settings.dart';
 import 'package:PiliPlus/utils/grid.dart';
 import 'package:PiliPlus/utils/waterfall.dart';
 import 'package:get/get.dart';
@@ -36,6 +37,7 @@ class _SettingsSearchPageState
     ...dynamicsSettings,
     ...videoSettings,
     ...playSettings,
+    ...shortVideoSettings,
     ...styleSettings,
   ];
 

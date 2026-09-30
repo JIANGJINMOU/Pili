@@ -164,6 +164,14 @@ CONTEXT.md
 
 .claude
 test*
+!/test/
+/test/*
+!/test/short_video_comment_sheet_test.dart
+!/test/short_video_settings_test.dart
+!/test/playback_lifecycle_speed_test.dart
 /pubspec_overrides.yaml
 .mindfs
-.agents 
+.agents
+!/test/short_video_recommendation_test.dart
+!/docs/short-video-recommendation.md
+!/docs/android-build.md

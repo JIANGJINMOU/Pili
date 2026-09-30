@@ -7,9 +7,11 @@ import 'package:PiliPlus/pages/home/controller.dart';
 import 'package:PiliPlus/pages/home/home_preview_scope.dart';
 import 'package:PiliPlus/pages/main/controller.dart';
 import 'package:PiliPlus/pages/mine/controller.dart';
+import 'package:PiliPlus/pages/short_video/entry.dart';
 import 'package:PiliPlus/utils/extension/get_ext.dart';
 import 'package:PiliPlus/utils/extension/size_ext.dart';
 import 'package:PiliPlus/utils/feed_back.dart';
+import 'package:PiliPlus/utils/platform_utils.dart';
 import 'package:PiliPlus/utils/storage_pref.dart';
 import 'package:get/get.dart';
 import 'package:material_design_icons_flutter/material_design_icons_flutter.dart';
@@ -109,6 +111,7 @@ class _HomePageState extends CommonPageState<HomePage>
     final child = Row(
       children: [
         searchBar(),
+        if (PlatformUtils.isMobile) const ShortVideoEntry(),
         const SizedBox(width: 4),
         msgBadge(_mainController),
         const SizedBox(width: 8),
