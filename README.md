@@ -23,6 +23,28 @@
 <br/>
 
 ## 项目说明
+本仓库为 [JIANGJINMOU/Pili](https://github.com/JIANGJINMOU/Pili)，基于
+[Starfallan/PiliNara](https://github.com/Starfallan/PiliNara) 继续开发，重点完善 Android 竖屏视频。
+应用显示名称仍为 **PiliNara**；以下保留上游功能说明与致谢。
+
+### 本分支新增：Android 竖屏视频
+
+- 首页竖屏入口，支持上下翻页、自动播放/自动下一条、双击清屏、长按临时倍速。
+- 底部评论面板与子评论，不跳转详情页；首评和回复一起滚动，面板打开时锁定视频翻页。
+- 三种滑动风格：柔和渐缓停靠、利落轻甩快切、标准翻页；滑动中保持当前播放器，停稳后切换。
+- 独立竖屏设置：入口开关、预加载、网络策略、适配方式、固定倍速（右侧开关、两排倍率）。
+- 上游推荐元数据候选池 + 本地轻量排序 + 按需解析播放地址，不一次加载大量视频。
+- 本地兴趣学习可关闭、记录可清除；通知栏/后台恢复保留播放进度和手动暂停状态。
+
+**当前 Android 包名：`com.example.pilinara`，构建仅保留 `arm64-v8a`。**
+旧测试包 `com.examole.pili` 是不同应用，数据不会自动迁移。相同包名的覆盖安装仍要求签名一致。
+
+- [竖屏功能、架构与回归说明](docs/short-video-recommendation.md)
+- [Android Release 构建与安装说明](docs/android-build.md)
+
+> 测试和编译成功不等于真机验收。网络可用性、解码性能、滑动手感及推荐质量仍需设备验证。
+
+### 上游项目说明
 - 本项目PiliNara是基于[PiliPlus](https://github.com/bggRGjQaUbCoE/PiliPlus)进行修改的,做了一些自用的改动.
 - 本仓库保留了PiliPlus的所有功能,并在此基础上进行了部分自用的优化和调整.支持导入PiliPlus的设置和数据，也应该支持了导出设置和数据到PiliPlus.
 - 本项目会定期同步PiliPlus的更新,并在此基础上进行修改和优化.
@@ -311,7 +333,7 @@ Fork特性：
 
 ## 下载
 
-可以通过右侧release进行下载或拉取代码到本地进行编译
+请查看[本仓库 Releases](https://github.com/JIANGJINMOU/Pili/releases)；若尚未发布安装包，按[构建指南](docs/android-build.md)自行编译。下方 Linux 软件源说明继承自上游，不代表已包含本分支新增功能。
 
 ### Arch Linux
 
@@ -370,10 +392,10 @@ yay -S pilinara-bin
 
 ## Star History
 
-<a href="https://star-history.dera.page/#Starfallan/PiliNara">
+<a href="https://star-history.dera.page/#JIANGJINMOU/Pili">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=Starfallan/PiliNara&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=Starfallan/PiliNara" />
-   <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=Starfallan/PiliNara" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=JIANGJINMOU/Pili&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=JIANGJINMOU/Pili" />
+   <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=JIANGJINMOU/Pili" />
  </picture>
 </a>
