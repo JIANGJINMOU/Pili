@@ -27,6 +27,7 @@ import 'package:PiliPlus/pages/setting/models/play_settings.dart'
     show showPlayerVolumeDialog;
 import 'package:PiliPlus/pages/setting/widgets/cdn_select_dialog.dart';
 import 'package:PiliPlus/pages/setting/widgets/popup_item.dart';
+import 'package:PiliPlus/pages/short_video/entry.dart';
 import 'package:PiliPlus/pages/video/controller.dart';
 import 'package:PiliPlus/pages/video/introduction/local/controller.dart';
 import 'package:PiliPlus/pages/video/introduction/pgc/controller.dart';
@@ -264,6 +265,7 @@ class HeaderControl extends StatefulWidget {
     required this.controller,
     required this.videoDetailCtr,
     required this.heroTag,
+    this.onOpenShortVideo,
     super.key,
   });
 
@@ -271,6 +273,7 @@ class HeaderControl extends StatefulWidget {
   final PlPlayerController controller;
   final VideoDetailController videoDetailCtr;
   final String heroTag;
+  final VoidCallback? onOpenShortVideo;
 
   @override
   State<HeaderControl> createState() => HeaderControlState();
@@ -687,7 +690,8 @@ class HeaderControlState extends State<HeaderControl>
                                 plPlayerController.onlyPlayAudio.value =
                                     !onlyPlayAudio;
                                 plPlayerController.markManualOnlyPlayAudio(
-                                    !onlyPlayAudio);
+                                  !onlyPlayAudio,
+                                );
                                 final player =
                                     plPlayerController.videoPlayerController!;
                                 if (onlyPlayAudio &&
@@ -1598,8 +1602,7 @@ class HeaderControlState extends State<HeaderControl>
                     onChanged: updateFontScale,
                   ),
                   ...sliderRow(
-                    title:
-                        '全屏字体大小 ${(fontScaleFS * 100).toStringAsFixed(1)}%',
+                    title: '全屏字体大小 ${(fontScaleFS * 100).toStringAsFixed(1)}%',
                     reset: isPrimary
                         ? resetBtn(
                             theme,
@@ -1681,8 +1684,7 @@ class HeaderControlState extends State<HeaderControl>
                       onChanged: updateSecondarySpacing,
                     ),
                   ...sliderRow(
-                    title:
-                        '背景不透明度 ${(bgOpacity * 100).toStringAsFixed(1)}%',
+                    title: '背景不透明度 ${(bgOpacity * 100).toStringAsFixed(1)}%',
                     reset: resetBtn(theme, '67%', () => updateOpacity(0.67)),
                     min: 0,
                     max: 1,
@@ -1838,7 +1840,12 @@ class HeaderControlState extends State<HeaderControl>
   late final isFileSource = videoDetailCtr.isFileSource;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) =>
+        _buildHeader(context, constraints.maxWidth),
+  );
+
+  Widget _buildHeader(BuildContext context, double availableWidth) {
     final isFullScreen = this.isFullScreen;
     final isFSOrPip = isFullScreen || plPlayerController.isDesktopPip;
     final showFSActionItem =
@@ -1884,7 +1891,8 @@ class HeaderControlState extends State<HeaderControl>
                 },
               ),
             ),
-            if (introController.isShowOnlineTotal || introController.isShowDmCount)
+            if (introController.isShowOnlineTotal ||
+                introController.isShowDmCount)
               Positioned(
                 left: 0,
                 bottom: 0,
@@ -1915,7 +1923,11 @@ class HeaderControlState extends State<HeaderControl>
       title = const Spacer();
     }
 
-    const btnWidth = 42.0;
+    // Reserve optional sponsor/segment controls too, within the actual player
+    // width (which may be narrower than the screen in split-screen layouts).
+    final btnWidth = !isFSOrPip && widget.onOpenShortVideo != null
+        ? (availableWidth / (isPortrait ? 10 : 12)).clamp(0.0, 42.0)
+        : 42.0;
     const btnHeight = 34.0;
     const btnStyle = ButtonStyle(padding: WidgetStatePropertyAll(.zero));
 
@@ -1958,6 +1970,15 @@ class HeaderControlState extends State<HeaderControl>
                   ),
                 ),
               title,
+              if (!isFSOrPip && widget.onOpenShortVideo != null)
+                SizedBox(
+                  width: btnWidth,
+                  height: btnHeight,
+                  child: ShortVideoEntry(
+                    playerStyle: true,
+                    onOpen: widget.onOpenShortVideo,
+                  ),
+                ),
               // show current datetime
               ...?timeBatteryWidgets,
               if (PlatformUtils.isDesktop && !plPlayerController.isDesktopPip)
@@ -2264,7 +2285,8 @@ class HeaderControlState extends State<HeaderControl>
               ],
             ),
           // 计入人数行的高度，收起顶部控制栏时避免溢出内容残留。
-          if (introController.isShowOnlineTotal || introController.isShowDmCount)
+          if (introController.isShowOnlineTotal ||
+              introController.isShowDmCount)
             const Visibility(
               visible: false,
               maintainAnimation: true,

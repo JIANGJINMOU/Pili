@@ -1,3 +1,4 @@
+import 'package:PiliPlus/pages/setting/widgets/short_video_settings_layout.dart';
 import 'package:PiliPlus/common/widgets/scaffold/simple_scaffold.dart';
 import 'package:PiliPlus/models/common/setting_type.dart';
 import 'package:PiliPlus/pages/setting/models/model.dart';
@@ -50,16 +51,18 @@ class _CommonSettingState extends State<CommonSetting> {
     final showAppBar = widget.showAppBar;
     return SimpleScaffold(
       appBar: showAppBar ? AppBar(title: Text(widget.settingType.title)) : null,
-      body: ListView.builder(
-        key: ValueKey(widget.settingType),
-        padding: EdgeInsets.only(
-          left: showAppBar ? padding.left : 0,
-          right: showAppBar ? padding.right : 0,
-          bottom: padding.bottom + 100,
-        ),
-        itemCount: settings.length,
-        itemBuilder: (context, index) => settings[index].widget,
-      ),
+      body: widget.settingType == SettingType.shortVideoSetting
+          ? ShortVideoSettingsLayout(settings: settings, padding: padding)
+          : ListView.builder(
+              key: ValueKey(widget.settingType),
+              padding: EdgeInsets.only(
+                left: showAppBar ? padding.left : 0,
+                right: showAppBar ? padding.right : 0,
+                bottom: padding.bottom + 100,
+              ),
+              itemCount: settings.length,
+              itemBuilder: (context, index) => settings[index].widget,
+            ),
     );
   }
 }

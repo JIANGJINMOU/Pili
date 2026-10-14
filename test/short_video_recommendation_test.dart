@@ -1,4 +1,9 @@
 import 'dart:async';
+
+import 'package:PiliPlus/pages/short_video/launch.dart';
+import 'package:PiliPlus/models_new/video/video_detail/data.dart';
+import 'package:PiliPlus/models_new/video/video_detail/page.dart';
+
 import 'dart:io';
 
 import 'package:hive_ce/hive.dart';
@@ -77,6 +82,91 @@ class DisposalPlayer implements Player {
 }
 
 void main() {
+  test('detail conversion uses current identity, selected part and millisecond position', () {
+    final launch = ShortVideoLaunch.fromDetail(
+      detail: VideoDetailData(
+        aid: 1,
+        cid: 10,
+        title: '旧视频',
+        duration: 900,
+        pages: [
+          Part(cid: 10, part: '第一P', duration: 500),
+          Part(cid: 22, part: '当前P', duration: 400),
+        ],
+      ),
+      aid: 2,
+      bvid: 'BVcurrent',
+      cid: 22,
+      position: const Duration(milliseconds: 37123),
+    );
+    expect(launch.item.aid, 2);
+    expect(launch.item.bvid, 'BVcurrent');
+    expect(launch.item.cid, 22);
+    expect(launch.item.title, '当前P');
+    expect(launch.item.duration, 400);
+    expect(launch.position.inMilliseconds, 37123);
+  });
+
+  test('explicit initial video is immediate and recommendations only append without duplicating it', () async {
+    var calls = 0;
+    final selected = item(99, vertical: false);
+    final c = ShortVideoController(
+      storage: MemoryStorage(),
+      initialLaunch: ShortVideoLaunch(item: selected),
+      preferences: const ShortVideoPreferences(onlyVertical: true),
+      metadataLoader: (_) async {
+        calls++;
+        return Success([selected, item(1), item(2)]);
+      },
+    )..onInit();
+    expect(calls, 0);
+    expect(c.items.single, same(selected));
+    await c.loadMore();
+    expect(c.items.first, same(selected));
+    expect(c.items.where((e) => e.aid == 99), hasLength(1));
+    expect(c.items.length, 3);
+    c.onClose();
+  });
+
+  test(
+    'stale initial recommendation request cannot overwrite explicit launch',
+    () async {
+      final pending = Completer<LoadingState<List<BaseRcmdVideoItemModel>>>();
+      final c = ShortVideoController(
+        storage: MemoryStorage(),
+        metadataLoader: (_) => pending.future,
+      );
+      final refresh = c.refreshFeed();
+      final selected = item(99);
+      c.startFrom(
+        ShortVideoLaunch(item: selected, position: const Duration(seconds: 30)),
+      );
+      pending.complete(Success([item(1)]));
+      await refresh;
+      expect(c.items.single, same(selected));
+      expect(c.takeInitialPosition(selected), const Duration(seconds: 30));
+      expect(c.takeInitialPosition(selected), Duration.zero);
+      expect(c.isInitialLoading.value, isFalse);
+      c.onClose();
+    },
+  );
+
+  test('stale load more cannot append results from previous feed after explicit launch', () async {
+    final pending = Completer<LoadingState<List<BaseRcmdVideoItemModel>>>();
+    final c = ShortVideoController(
+      storage: MemoryStorage(),
+      metadataLoader: (_) => pending.future,
+    );
+    c.items.add(item(1));
+    final more = c.loadMore();
+    c.startFrom(ShortVideoLaunch(item: item(99)));
+    pending.complete(Success([item(2)]));
+    await more;
+    expect(c.items.map((e) => e.aid), [99]);
+    expect(c.isLoadingMore.value, isFalse);
+    c.onClose();
+  });
+
   test('late watch checkpoints cannot restore a cleared profile', () async {
     final storage = MemoryStorage();
     final c = ShortVideoController(storage: storage);
@@ -358,7 +448,7 @@ void main() {
     expect(w.feedback(ShortVideoFeedback.like, enabled: false), 0);
   });
   test(
-    'initial pool uses at most three metadata batches and zero playback URLs',
+    'cold feed publishes first eligible batch and refills metadata on demand',
     () async {
       var calls = 0;
       final c = ShortVideoController(
@@ -369,13 +459,33 @@ void main() {
         },
       );
       await c.refreshFeed();
-      expect(calls, 3);
-      expect(c.items, hasLength(15));
-      expect(c.candidateCount, 21);
+      expect(calls, 1);
+      expect(c.items, hasLength(12));
+      expect(c.candidateCount, 0);
       expect(c.sourceCacheCount, 0);
       await c.loadMore();
-      expect(calls, 3); // consume existing metadata before more network work
-      expect(c.items, hasLength(30));
+      expect(calls, 4); // at most three additional metadata batches
+      expect(c.items, hasLength(27));
+      expect(c.sourceCacheCount, 0);
+    },
+  );
+  test(
+    'cold feed skips ineligible batches but does not wait for a later batch',
+    () async {
+      var calls = 0;
+      final c = ShortVideoController(
+        storage: MemoryStorage(),
+        metadataLoader: (_) async {
+          calls++;
+          if (calls == 1) return Success([item(1, goto: 'ad_av')]);
+          if (calls == 2) return Success([item(2)]);
+          throw StateError('first playback must not depend on this request');
+        },
+      );
+      await c.refreshFeed();
+      expect(calls, 2);
+      expect(c.items.map((v) => v.aid), [2]);
+      expect(c.isInitialLoading.value, false);
       expect(c.sourceCacheCount, 0);
     },
   );
@@ -400,10 +510,10 @@ void main() {
       },
     );
     await c.refreshFeed();
-    expect(calls, 3);
+    expect(calls, 1);
     expect(c.items.map((i) => i.aid), [4]);
     await c.loadMore();
-    expect(calls, 6);
+    expect(calls, 4);
     expect(c.items, hasLength(1));
   });
   test(

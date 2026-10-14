@@ -211,6 +211,61 @@ void main() {
   });
   tearDown(Get.reset);
 
+  testWidgets(
+    'comments open at half height and slow header drag dismisses without paging',
+    (tester) async {
+      var video = 0;
+      await _pumpFeed(tester, onPageChanged: (value) => video = value);
+      await tester.tap(find.text('打开评论 0'));
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .getSize(find.byKey(const ValueKey('short-video-comment-panel')))
+            .height,
+        422,
+      );
+      await tester.timedDrag(
+        find.text('32 条评论'),
+        const Offset(0, 260),
+        const Duration(seconds: 2),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('short-video-comment-panel')),
+        findsNothing,
+      );
+      expect(video, 0);
+    },
+  );
+
+  testWidgets(
+    'thread animates in and out without losing main scroll position',
+    (tester) async {
+      await _pumpFeed(tester, loadReplies: _loadWithThreads);
+      await tester.tap(find.text('打开评论 0'));
+      await tester.pumpAndSettle();
+      final mainScroll = tester
+          .widget<CustomScrollView>(find.byType(CustomScrollView))
+          .controller!;
+      final offset = mainScroll.offset;
+      await tester.tap(find.text('共 3 条回复'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 80));
+      final root = find.byKey(const ValueKey('thread-root-comment'));
+      expect(tester.getTopLeft(root).dx, greaterThan(12));
+      await tester.pumpAndSettle();
+      await tester.binding.handlePopRoute();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 80));
+      expect(tester.getTopLeft(root).dx, greaterThan(12));
+      await tester.pumpAndSettle();
+      expect(root, findsNothing);
+      expect(mainScroll.offset, offset);
+      await tester.tap(find.byTooltip('关闭评论'));
+      await tester.pumpAndSettle();
+    },
+  );
+
   testWidgets('failed thread root like repaints parent after returning', (
     tester,
   ) async {
@@ -371,6 +426,12 @@ void main() {
       await tester.pumpAndSettle();
       expect(requests, [(123, 100, 1)]);
       expect(find.text('3 条回复'), findsOneWidget);
+      await tester.timedDrag(
+        find.byType(CustomScrollView),
+        const Offset(0, -260),
+        const Duration(milliseconds: 600),
+      );
+      await tester.pumpAndSettle();
       expect(find.text('完整回复 100-3'), findsOneWidget);
       await tester.drag(find.byType(CustomScrollView), const Offset(0, -100));
       await tester.pumpAndSettle();
@@ -380,6 +441,8 @@ void main() {
       expect(find.text('32 条评论'), findsOneWidget);
       expect(mainScroll.offset, 30);
       // Counts remain clickable even when there was no inline reply preview.
+      await tester.ensureVisible(find.text('共 1 条回复'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('共 1 条回复'));
       await tester.pumpAndSettle();
       expect(requests.last, (123, 200, 1));
@@ -457,6 +520,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(pages, [1, 1, 2]);
     expect(find.text('加载失败，点击重试'), findsOneWidget);
+    await tester.ensureVisible(find.text('加载失败，点击重试'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('加载失败，点击重试'));
     await tester.pumpAndSettle();
     await tester.timedDrag(
@@ -501,7 +566,10 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('共 3 条回复'));
     await tester.pump();
+    await tester.pump(const Duration(milliseconds: 260));
     await tester.tap(find.widgetWithText(TextButton, '评论'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('共 1 条回复'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('共 1 条回复'));
     await tester.pumpAndSettle();
@@ -546,6 +614,8 @@ void main() {
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField), '一级评论草稿');
       await tester.tap(find.text('共 3 条回复'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('完整回复 100-2'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('完整回复 100-2'));
       await tester.pumpAndSettle();
@@ -680,28 +750,32 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('real video card comment icon and composer both open the panel', (
-    tester,
-  ) async {
-    await _pumpFeed(tester, useVideoCard: true);
-    expect(tester.takeException(), isNull);
-    final commentPosition = tester.getCenter(
-      find.byIcon(Icons.chat_bubble_rounded),
-    );
-    await tester.tapAt(commentPosition);
-    // Once opened, the modal must intercept further taps at the same point.
-    await tester.tapAt(commentPosition);
-    await tester.pumpAndSettle();
-    expect(find.text('评论内容 0'), findsOneWidget);
-    expect(tester.takeException(), isNull);
-    await tester.tap(find.byTooltip('关闭评论'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('留下你的精彩评论…'));
-    await tester.pumpAndSettle();
-    expect(find.text('评论内容 0'), findsOneWidget);
-    expect(find.byType(ErrorWidget), findsNothing);
-    expect(tester.takeException(), isNull);
-  });
+  testWidgets(
+    'real video card retains comment icon without the removed bottom composer',
+    (
+      tester,
+    ) async {
+      await _pumpFeed(tester, useVideoCard: true);
+      expect(tester.takeException(), isNull);
+      final commentPosition = tester.getCenter(
+        find.byIcon(Icons.chat_bubble_rounded),
+      );
+      await tester.tapAt(commentPosition);
+      // Once opened, the modal must intercept further taps at the same point.
+      await tester.tapAt(commentPosition);
+      await tester.pumpAndSettle();
+      expect(find.text('评论内容 0'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.tap(find.byTooltip('关闭评论'));
+      await tester.pumpAndSettle();
+      expect(find.text('留下你的精彩评论…'), findsNothing);
+      await tester.tap(find.byIcon(Icons.chat_bubble_rounded));
+      await tester.pumpAndSettle();
+      expect(find.text('评论内容 0'), findsOneWidget);
+      expect(find.byType(ErrorWidget), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'opens and renders comments under the real material_ui app shell',

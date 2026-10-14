@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:PiliPlus/pages/short_video/launch.dart';
+
 import 'package:PiliPlus/pages/short_video/recommendation/candidate.dart';
 import 'package:PiliPlus/pages/short_video/recommendation/user_profile.dart';
 import 'package:PiliPlus/pages/short_video/recommendation/recommendation_engine.dart';
@@ -22,11 +24,21 @@ class ShortVideoSource {
     required this.url,
     required this.cid,
     required this.isVertical,
+    this.aspectRatio,
+    this.quality = 64,
+    this.qualityUrls = const {},
   });
 
   final String url;
   final int cid;
   final bool isVertical;
+  final double? aspectRatio;
+  double get displayAspectRatio =>
+      aspectRatio != null && aspectRatio!.isFinite && aspectRatio! > 0
+      ? aspectRatio!
+      : (isVertical ? 9 / 16 : 16 / 9);
+  final int quality;
+  final Map<int, String> qualityUrls;
 }
 
 class ShortVideoController extends GetxController {
@@ -35,6 +47,7 @@ class ShortVideoController extends GetxController {
     Future<LoadingState<List<BaseRcmdVideoItemModel>>> Function(int)?
     metadataLoader,
     this.sourceResolver,
+    this.initialLaunch,
     RecommendationStorage? storage,
     RecommendationEngine? engine,
   }) : _metadataLoader =
@@ -42,6 +55,48 @@ class ShortVideoController extends GetxController {
            ((index) => VideoHttp.rcmdVideoListApp(freshIdx: index)),
        _storage = storage ?? RecommendationStorage(),
        _engine = engine ?? RecommendationEngine();
+
+  final ShortVideoLaunch? initialLaunch;
+  ShortVideoLaunch? _launch;
+  Duration _launchPosition = Duration.zero;
+  final launchRevision = 0.obs;
+
+  bool isExplicitVideo(BaseRcmdVideoItemModel item) =>
+      _launch != null &&
+      _launch!.item.aid == item.aid &&
+      _launch!.item.cid == item.cid;
+
+  Duration takeInitialPosition(BaseRcmdVideoItemModel item) {
+    if (!isExplicitVideo(item)) return Duration.zero;
+    final position = _launchPosition;
+    _launchPosition = Duration.zero;
+    return position;
+  }
+
+  /// Invalidate old recommendation requests before replacing the current item.
+  /// Explicit selections bypass recommendation-only orientation/history filters.
+  void startFrom(ShortVideoLaunch launch) {
+    if (isClosed) return;
+    _feedEpoch++;
+    _refreshingVertical = null;
+    _refill = null;
+    _pool.clear();
+    _sourceCache.clear();
+    _queued.add(launch.item.aid!);
+    while (_queued.length > 1000) {
+      _queued.remove(_queued.first);
+    }
+    _launch = launch;
+    _launchPosition = launch.position < Duration.zero
+        ? Duration.zero
+        : launch.position;
+    isInitialLoading.value = false;
+    isLoadingMore.value = false;
+    errorMessage.value = null;
+    loadMoreError.value = null;
+    items.assignAll([launch.item]);
+    launchRevision.value++;
+  }
 
   ShortVideoPreferences preferences;
   final Future<LoadingState<List<BaseRcmdVideoItemModel>>> Function(int)
@@ -73,7 +128,13 @@ class ShortVideoController extends GetxController {
   @override
   void onInit() {
     super.onInit();
-    if (preferences.enabled) unawaited(refreshFeed());
+    if (preferences.enabled) {
+      if (initialLaunch case final launch?) {
+        startFrom(launch);
+      } else {
+        unawaited(refreshFeed());
+      }
+    }
   }
 
   void recordExposure(BaseRcmdVideoItemModel item) {
@@ -145,7 +206,9 @@ class ShortVideoController extends GetxController {
     _pool.clear();
     _freshIdx = 0;
     try {
-      await _ensurePool(epoch, 30);
+      // Cold entry should not wait for 2-3 recommendation requests to fill a
+      // ranking pool. Start with the first eligible batch, refill on demand.
+      await _ensurePool(epoch, items.isEmpty ? 1 : 30);
       if (isClosed || epoch != _feedEpoch) return;
       final next = _select();
       if (next.isEmpty) {
@@ -326,12 +389,16 @@ class ShortVideoController extends GetxController {
     final aid = item.aid!;
     final bvid = item.bvid ?? IdUtils.av2bv(aid);
     var cid = item.cid;
+    double? pageAspectRatio;
     var isVertical = item.uri?.isVerticalFromUri == true;
 
     if (cid == null) {
       final page = await SearchHttp.ab2cWithDimension(aid: aid, bvid: bvid);
       cid = page?.cid;
       isVertical = page?.dimension?.isVertical ?? isVertical;
+      final width = page?.dimension?.width ?? 0;
+      final height = page?.dimension?.height ?? 0;
+      if (width > 0 && height > 0) pageAspectRatio = width / height;
     }
     if (cid == null) {
       throw StateError('无法获取视频分P信息');
@@ -347,22 +414,33 @@ class ShortVideoController extends GetxController {
     );
     if (result case Success(:final response)) {
       final source = _pickSource(response);
+      final qualityUrls = <int, String>{};
+      for (final video in response.dash?.video ?? []) {
+        final selected = _pickSource(response, quality: video.id);
+        if (selected != null && selected.$3 == video.id) {
+          qualityUrls[video.id] = selected.$1;
+        }
+      }
       if (source == null) throw StateError('未获取到可用播放地址');
       return ShortVideoSource(
         url: source.$1,
         cid: cid,
         isVertical: source.$2 ?? isVertical,
+        aspectRatio: source.$4 ?? pageAspectRatio,
+        quality: source.$3,
+        qualityUrls: qualityUrls.isEmpty ? {source.$3: source.$1} : qualityUrls,
       );
     }
     throw StateError(result.toString());
   }
 
-  (String, bool?)? _pickSource(PlayUrlModel playUrl) {
+  (String, bool?, int, double?)? _pickSource(
+    PlayUrlModel playUrl, {
+    int quality = 64,
+  }) {
     final dash = playUrl.dash;
     if (dash?.video case final videos? when videos.isNotEmpty) {
-      final candidates = videos
-          .where((item) => item.id <= VideoQuality.high720.code)
-          .toList();
+      final candidates = videos.where((item) => item.id <= quality).toList();
       final pool = candidates.isEmpty ? [...videos] : candidates
         ..sort((a, b) {
           final quality = b.id.compareTo(a.id);
@@ -382,12 +460,16 @@ class ShortVideoController extends GetxController {
         return (
           mediaUrl,
           width != null && height != null ? height > width : null,
+          video.id,
+          width != null && height != null && width > 0 && height > 0
+              ? width / height
+              : null,
         );
       }
     }
 
     final durl = playUrl.durl?.firstOrNull?.playUrls.firstOrNull;
-    return durl == null ? null : (durl, null);
+    return durl == null ? null : (durl, null, playUrl.quality ?? quality, null);
   }
 
   String _friendlyError(Object error) {

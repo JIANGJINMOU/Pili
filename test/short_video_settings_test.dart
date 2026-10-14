@@ -1,4 +1,15 @@
+import 'package:PiliPlus/pages/short_video/display_preferences.dart';
+import 'package:PiliPlus/pages/short_video/subtitle_preferences.dart';
+import 'package:PiliPlus/pages/setting/widgets/short_video_subtitle_setting.dart';
+
 import 'dart:io';
+
+import 'package:flutter/services.dart';
+import 'package:PiliPlus/pages/short_video/system_ui.dart';
+import 'package:PiliPlus/plugin/pl_player/utils/fullscreen.dart';
+
+import 'package:PiliPlus/pages/setting/models/short_video_settings.dart';
+import 'package:PiliPlus/pages/setting/models/model.dart';
 
 import 'package:PiliPlus/pages/setting/widgets/fixed_speed_setting.dart';
 
@@ -6,6 +17,7 @@ import 'package:PiliPlus/models/common/setting_type.dart';
 import 'package:PiliPlus/models/model_rec_video_item.dart';
 import 'package:PiliPlus/pages/setting/common_setting.dart';
 import 'package:PiliPlus/pages/short_video/controller.dart';
+import 'package:PiliPlus/pages/short_video/comment_layout.dart';
 import 'package:PiliPlus/pages/short_video/entry.dart';
 import 'package:PiliPlus/pages/short_video/pager.dart';
 import 'package:PiliPlus/pages/short_video/preferences.dart';
@@ -25,6 +37,8 @@ Widget app(Widget child) => GetMaterialApp(
 );
 
 Future<void> tapSetting(WidgetTester tester, String label) async {
+  await tester.ensureVisible(find.text(label));
+  await tester.pumpAndSettle();
   // Hive uses real file I/O; initiate the UI write outside the fake test clock.
   await tester.runAsync(() async {
     await tester.tap(find.text(label));
@@ -44,6 +58,319 @@ class RecordingController extends ShortVideoController {
 }
 
 void main() {
+  test('subtitle settings are opt-in, bounded, and tolerate legacy fill', () {
+    final defaults = ShortVideoPreferences.fromMap({
+      SettingBoxKey.shortVideoFill: true,
+    });
+    expect(defaults.subtitles.translate, isFalse);
+    expect(defaults.subtitles.fontSize, 16);
+    expect(defaults.subtitles.language, ShortVideoSubtitleLanguage.auto);
+    final p = ShortVideoSubtitlePreferences.fromMap({
+      SettingBoxKey.shortVideoSubtitleTranslate: 'true',
+      SettingBoxKey.shortVideoSubtitleTarget: 'auto',
+      SettingBoxKey.shortVideoSubtitleFont: 200,
+      SettingBoxKey.shortVideoSubtitleBackground: double.nan,
+      SettingBoxKey.shortVideoSubtitleBilingual: 'false',
+    });
+    expect(p.translate, isFalse);
+    expect(p.target, ShortVideoSubtitleLanguage.chinese);
+    expect(p.fontSize, 28);
+    expect(p.backgroundOpacity, .65);
+    expect(p.bilingual, isTrue);
+    expect(
+      shortVideoSettings.whereType<SwitchModel>().any(
+        (s) => s.setKey == SettingBoxKey.shortVideoFill,
+      ),
+      isFalse,
+    );
+  });
+
+  test('display choices are safe and removed AI cannot remain active', () {
+    final defaults = ShortVideoPreferences.fromMap({
+      SettingBoxKey.shortVideoFill: true,
+      SettingBoxKey.shortVideoAspect: 'unknown',
+      SettingBoxKey.shortVideoFit: 42,
+      SettingBoxKey.shortVideoSubtitleTranslate: true,
+      SettingBoxKey.shortVideoSubtitlePosition: 'invalid',
+      SettingBoxKey.shortVideoSubtitleLines: 100,
+      SettingBoxKey.shortVideoSubtitleBold: 'true',
+    });
+    expect(defaults.aspect, ShortVideoAspect.original);
+    expect(defaults.fit, ShortVideoFit.contain);
+    expect(defaults.subtitles.translate, isFalse);
+    expect(defaults.subtitles.position, ShortVideoSubtitlePosition.bottom);
+    expect(defaults.subtitles.lines, ShortVideoSubtitleLines.three);
+    expect(defaults.subtitles.bold, isFalse);
+    for (final aspect in ShortVideoAspect.values) {
+      for (final fit in ShortVideoFit.values) {
+        final p = ShortVideoPreferences.fromMap({
+          SettingBoxKey.shortVideoAspect: aspect.name,
+          SettingBoxKey.shortVideoFit: fit.name,
+        });
+        expect(p.aspect, aspect);
+        expect(p.fit.fit, fit.fit);
+      }
+    }
+  });
+
+  testWidgets('subtitle choices persist without AI controls', (tester) async {
+    await tester.pumpWidget(
+      app(
+        const Scaffold(
+          body: SingleChildScrollView(child: ShortVideoSubtitleSetting()),
+        ),
+      ),
+    );
+    expect(find.text('AI 字幕翻译'), findsNothing);
+    expect(find.text('AI 服务配置'), findsNothing);
+    await tapSetting(tester, '字幕位置');
+    await tapSetting(tester, '顶部');
+    expect(
+      ShortVideoPreferences.read().subtitles.position,
+      ShortVideoSubtitlePosition.top,
+    );
+    await tapSetting(tester, '字幕样式');
+    await tapSetting(tester, '字幕颜色');
+    await tapSetting(tester, '黄色');
+    await tapSetting(tester, '字幕加粗');
+    await tapSetting(tester, '字幕阴影');
+    await tapSetting(tester, '字幕对齐');
+    await tapSetting(tester, '左对齐');
+    await tapSetting(tester, '字幕最大行数');
+    await tapSetting(tester, '最多 4 行');
+    final p = ShortVideoPreferences.read().subtitles;
+    expect(p.color, ShortVideoSubtitleColor.yellow);
+    expect(p.bold, isTrue);
+    expect(p.shadow, isFalse);
+    expect(p.align, ShortVideoSubtitleAlign.left);
+    expect(p.lines.count, 4);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('display ratio and fit settings persist independently', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      app(const CommonSetting(settingType: SettingType.shortVideoSetting)),
+    );
+    await tester.pumpAndSettle();
+    await tapSetting(tester, '画面比例');
+    await tapSetting(tester, '4:3');
+    await tapSetting(tester, '画面适配');
+    await tapSetting(tester, '铺满裁切');
+    expect(ShortVideoPreferences.read().aspect, ShortVideoAspect.classic);
+    expect(ShortVideoPreferences.read().fit, ShortVideoFit.cover);
+    await tapSetting(tester, '画面比例');
+    await tapSetting(tester, '原始比例');
+    await tapSetting(tester, '画面适配');
+    await tapSetting(tester, '完整显示（默认）');
+    expect(ShortVideoPreferences.read().aspect, ShortVideoAspect.original);
+    expect(ShortVideoPreferences.read().fit, ShortVideoFit.contain);
+  });
+
+  testWidgets('grouped portrait settings fit narrow dark large-text viewport', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(320, 720);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      app(
+        Theme(
+          data: ThemeData.dark(),
+          child: const MediaQuery(
+            data: MediaQueryData(
+              size: Size(320, 720),
+              textScaler: TextScaler.linear(1.3),
+            ),
+            child: CommonSetting(
+              settingType: SettingType.shortVideoSetting,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('你的竖屏体验'), findsNothing);
+    expect(find.text('完整画面 · 独立偏好 · 即时生效'), findsNothing);
+    expect(find.text('AI 字幕翻译'), findsNothing);
+    expect(find.text('AI 服务配置'), findsNothing);
+    expect(find.byType(Card), findsNWidgets(5));
+    await tapSetting(tester, '竖屏字幕');
+    expect(ShortVideoPreferences.read().subtitlesEnabled, isTrue);
+    await tapSetting(tester, '字幕样式');
+    await tester.ensureVisible(find.text('字幕背景'));
+    await tester.pumpAndSettle();
+    expect(find.text('字幕字号'), findsOneWidget);
+    await tester.ensureVisible(find.text('清除本地推荐记录'));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+  });
+
+  test('status bar defaults hidden and rejects malformed persisted values', () {
+    expect(ShortVideoPreferences.fromMap({}).showStatusBar, isFalse);
+    expect(
+      ShortVideoPreferences.fromMap({
+        SettingBoxKey.shortVideoShowStatusBar: 'true',
+      }).showStatusBar,
+      isFalse,
+    );
+    expect(
+      ShortVideoPreferences.fromMap({
+        SettingBoxKey.shortVideoShowStatusBar: true,
+      }).showStatusBar,
+      isTrue,
+    );
+  });
+
+  testWidgets(
+    'status-only mode can hide again and restore ordinary system bars',
+    (tester) async {
+      final calls = <MethodCall>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          calls.add(call);
+          return null;
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          null,
+        ),
+      );
+      await applyShortVideoSystemBars(true);
+      expect(calls.last.method, 'SystemChrome.setEnabledSystemUIOverlays');
+      expect(calls.last.arguments, ['SystemUiOverlay.top']);
+      await applyShortVideoSystemBars(false);
+      expect(calls.last.arguments, 'SystemUiMode.immersiveSticky');
+      await applyShortVideoSystemBars(true);
+      await showSystemBar();
+      expect(calls.last.arguments, 'SystemUiMode.edgeToEdge');
+      expect(showSystemBar_, isTrue);
+    },
+  );
+
+  testWidgets(
+    'status bar switch persists and is restored when reopening settings',
+    (tester) async {
+      await tester.pumpWidget(
+        app(const CommonSetting(settingType: SettingType.shortVideoSetting)),
+      );
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('显示系统顶部状态栏'));
+      await tapSetting(tester, '显示系统顶部状态栏');
+      expect(ShortVideoPreferences.read().showStatusBar, isTrue);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpWidget(
+        app(const CommonSetting(settingType: SettingType.shortVideoSetting)),
+      );
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('显示系统顶部状态栏'));
+      await tapSetting(tester, '显示系统顶部状态栏');
+      expect(ShortVideoPreferences.read().showStatusBar, isFalse);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  test('comment geometry bounds portrait, keyboard and missing dimensions', () {
+    ShortVideoCommentLayout layout(double ratio, [double inset = 0]) =>
+        ShortVideoCommentLayout.calculate(
+          screen: const Size(320, 720),
+          aspectRatio: ratio,
+          keyboardInset: inset,
+        );
+    expect(layout(9 / 16).videoHeight, closeTo(302.4, .01));
+    expect(layout(9 / 16, 260).videoHeight, 184);
+    expect(layout(16 / 9, 260).videoHeight, 180);
+    for (final ratio in [0.0, -1.0, double.nan, double.infinity]) {
+      expect(layout(ratio).videoHeight, 180);
+      expect(
+        ShortVideoSource(
+          url: 'test',
+          cid: 1,
+          isVertical: false,
+          aspectRatio: ratio,
+        ).displayAspectRatio,
+        16 / 9,
+      );
+    }
+    for (final inset in [0.0, 260.0, 700.0, 720.0, 900.0]) {
+      final result = layout(9 / 16, inset);
+      expect(result.videoHeight, greaterThanOrEqualTo(0));
+      expect(result.sheetHeight, greaterThanOrEqualTo(0));
+      expect(
+        result.videoHeight + result.sheetHeight,
+        closeTo(720 - inset.clamp(0, 720), .01),
+      );
+    }
+  });
+
+  testWidgets(
+    'player portrait entry uses callback and follows feature switch',
+    (tester) async {
+      var opened = 0;
+      await tester.pumpWidget(
+        app(
+          Scaffold(
+            body: SizedBox(
+              width: 32,
+              height: 34,
+              child: ShortVideoEntry(playerStyle: true, onOpen: () => opened++),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byIcon(Icons.stay_current_portrait_rounded), findsOneWidget);
+      await tester.tap(find.byTooltip('竖屏视频'));
+      expect(opened, 1);
+      await tester.runAsync(
+        () => GStorage.setting.put(SettingBoxKey.shortVideoEnabled, false),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('竖屏视频'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  test('clean screen and subtitles default off and accept only boolean preferences', () {
+    expect(ShortVideoPreferences.fromMap({}).cleanScreen, isFalse);
+    final settings = ShortVideoPreferences.fromMap({
+      SettingBoxKey.shortVideoCleanScreen: true,
+      SettingBoxKey.shortVideoSubtitles: 'true',
+    });
+    expect(settings.cleanScreen, isTrue);
+    expect(settings.subtitlesEnabled, isFalse);
+    expect(
+      shortVideoSettings.whereType<SwitchModel>().any(
+        (s) => s.setKey == SettingBoxKey.shortVideoCleanScreen,
+      ),
+      isTrue,
+    );
+  });
+  test('danmaku settings clamp malformed values safely', () {
+    final p = ShortVideoPreferences.fromMap({
+      SettingBoxKey.shortVideoDanmaku: true,
+      SettingBoxKey.shortVideoDanmakuFont: 99,
+      SettingBoxKey.shortVideoDanmakuOpacity: double.nan,
+      SettingBoxKey.shortVideoDanmakuArea: -1,
+    });
+    expect(p.danmakuEnabled, isTrue);
+    expect(p.danmakuFont, 30);
+    expect(p.danmakuOpacity, .85);
+    expect(p.danmakuArea, .2);
+  });
+  test('portrait settings keep fixed-speed switch without speed grid', () {
+    final widgets = shortVideoSettings.whereType<WidgetModel>();
+    final speed = widgets
+        .map((e) => e.child)
+        .whereType<FixedSpeedSetting>()
+        .single;
+    expect(speed.switchOnly, isTrue);
+  });
   test('fast near-boundary releases never overshoot the destination page', () {
     for (final style in [
       ShortVideoSwipeStyle.smooth,
@@ -172,10 +499,9 @@ void main() {
         p.autoNext,
         p.preload,
         p.muted,
-        p.fill,
         p.haptics,
       ],
-      [false, false, true, false, true, false, false],
+      [false, false, true, false, true, false],
     );
     expect(p.swipeStyle, ShortVideoSwipeStyle.quick);
   });

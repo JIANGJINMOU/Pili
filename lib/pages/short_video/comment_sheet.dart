@@ -1,8 +1,11 @@
 import 'dart:async';
 
+import 'dart:math' as math;
+
 import 'package:PiliPlus/common/widgets/image/network_img_layer.dart';
 import 'package:PiliPlus/http/loading_state.dart';
 import 'package:PiliPlus/http/reply.dart';
+import 'package:PiliPlus/pages/short_video/comment_layout.dart';
 import 'package:PiliPlus/http/video.dart';
 import 'package:PiliPlus/models/common/image_type.dart';
 import 'package:PiliPlus/models_new/reply/data.dart';
@@ -72,6 +75,9 @@ Future<void> showShortVideoComments({
   required int aid,
   required int commentCount,
   required ValueChanged<int> onCountChanged,
+  double? videoAspectRatio,
+  AnimationController? transitionAnimationController,
+  ValueChanged<double>? onSheetExtentChanged,
   ShortVideoReplyLoader loadReplies = ReplyHttp.replyList,
   ShortVideoThreadLoader loadThread = ReplyHttp.replyReplyList,
   ShortVideoCommentSender sendComment = _sendShortVideoComment,
@@ -81,24 +87,52 @@ Future<void> showShortVideoComments({
     context: context,
     useRootNavigator: true,
     isScrollControlled: true,
+    transitionAnimationController: transitionAnimationController,
     enableDrag: true,
     isDismissible: true,
-    barrierColor: Colors.black.withValues(alpha: 0.52),
+    barrierColor: Colors.transparent,
     backgroundColor: Colors.transparent,
-    builder: (sheetContext) => SizedBox(
-      height: MediaQuery.sizeOf(sheetContext).height * 0.78,
-      width: double.infinity,
-      child: _ShortVideoCommentSheet(
-        aid: aid,
-        loadReplies: loadReplies,
-        loadThread: loadThread,
-        sendComment: sendComment,
-        likeComment: likeComment,
-        commentCount: commentCount,
-        onClose: () => Navigator.of(sheetContext).pop(),
-        onCountChanged: onCountChanged,
-      ),
-    ),
+    builder: (sheetContext) {
+      final screenHeight = MediaQuery.sizeOf(sheetContext).height;
+      final inset = MediaQuery.viewInsetsOf(sheetContext).bottom;
+      final sheetHeight = videoAspectRatio == null
+          ? math.min(
+              screenHeight * .5,
+              math.max(0.0, screenHeight - inset - 32),
+            )
+          : ShortVideoCommentLayout.calculate(
+              screen: MediaQuery.sizeOf(sheetContext),
+              aspectRatio: videoAspectRatio,
+              keyboardInset: inset,
+            ).sheetHeight;
+      if (onSheetExtentChanged != null && screenHeight > 0) {
+        final extent = ((sheetHeight + inset) / screenHeight).clamp(0.0, 1.0);
+        WidgetsBinding.instance.addPostFrameCallback(
+          (_) => onSheetExtentChanged(extent),
+        );
+      }
+      return AnimatedPadding(
+        duration: const Duration(milliseconds: 180),
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.viewInsetsOf(sheetContext).bottom,
+        ),
+        child: SizedBox(
+          key: const ValueKey('short-video-comment-panel'),
+          height: sheetHeight,
+          width: double.infinity,
+          child: _ShortVideoCommentSheet(
+            aid: aid,
+            loadReplies: loadReplies,
+            loadThread: loadThread,
+            sendComment: sendComment,
+            likeComment: likeComment,
+            commentCount: commentCount,
+            onClose: () => Navigator.of(sheetContext).pop(),
+            onCountChanged: onCountChanged,
+          ),
+        ),
+      );
+    },
   );
 }
 
@@ -141,7 +175,14 @@ class _ShortVideoCommentSheet extends StatefulWidget {
       _ShortVideoCommentSheetState();
 }
 
-class _ShortVideoCommentSheetState extends State<_ShortVideoCommentSheet> {
+class _ShortVideoCommentSheetState extends State<_ShortVideoCommentSheet>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _threadAnimation = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 240),
+    reverseDuration: const Duration(milliseconds: 200),
+  );
+  bool _closingThread = false;
   final ScrollController _scrollController = ScrollController();
   final TextEditingController _textController = TextEditingController();
   final FocusNode _focusNode = FocusNode();
@@ -179,6 +220,7 @@ class _ShortVideoCommentSheetState extends State<_ShortVideoCommentSheet> {
     _scrollController
       ..removeListener(_onScroll)
       ..dispose();
+    _threadAnimation.dispose();
     _textController.dispose();
     _focusNode.dispose();
     super.dispose();
@@ -288,17 +330,33 @@ class _ShortVideoCommentSheetState extends State<_ShortVideoCommentSheet> {
   }
 
   void _openThread(ReplyItemModel item, {bool compose = false}) {
-    if (item.rpid == null || item.rpid! <= 0) return;
+    if (_activeThread != null || item.rpid == null || item.rpid! <= 0) return;
     _focusNode.unfocus();
     setState(() {
       _activeThread = item;
       _focusThreadComposer = compose;
     });
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _threadAnimation.value = 1;
+    } else {
+      _threadAnimation.forward(from: 0);
+    }
   }
 
-  void _closeThread() {
+  Future<void> _closeThread() async {
+    if (_closingThread || _activeThread == null) return;
     FocusScope.of(context).unfocus();
-    setState(() => _activeThread = null);
+    setState(() => _closingThread = true);
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _threadAnimation.value = 0;
+    } else {
+      await _threadAnimation.reverse();
+    }
+    if (!mounted) return;
+    setState(() {
+      _activeThread = null;
+      _closingThread = false;
+    });
   }
 
   void _selectReply(ReplyItemModel item) {
@@ -405,43 +463,73 @@ class _ShortVideoCommentSheetState extends State<_ShortVideoCommentSheet> {
   @override
   Widget build(BuildContext context) {
     final thread = _activeThread;
+    final mainSheet = _buildSheet(context);
     return PopScope(
       canPop: thread == null,
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop && _activeThread != null) _closeThread();
       },
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          Offstage(offstage: thread != null, child: _buildSheet(context)),
-          if (thread != null)
-            _ShortVideoCommentSheet(
-              key: ValueKey(thread.rpid),
-              aid: widget.aid,
-              root: thread,
-              commentCount:
-                  thread.rcount ?? thread.count ?? thread.replies?.length ?? 0,
-              loadReplies: widget.loadReplies,
-              loadThread: widget.loadThread,
-              sendComment: widget.sendComment,
-              likeComment: widget.likeComment,
-              pendingLikes: _pendingLikes,
-              onLikeChanged: () {
-                if (mounted) setState(() {});
-              },
-              focusComposer: _focusThreadComposer,
-              onBack: _closeThread,
-              onClose: widget.onClose,
-              onCountChanged: (count) {
-                if (mounted) setState(() => thread.rcount = count);
-              },
-              onReplySent: () {
-                if (!mounted) return;
-                setState(() => _count++);
-                widget.onCountChanged(_count);
-              },
-            ),
-        ],
+      child: ClipRect(
+        child: AnimatedBuilder(
+          animation: _threadAnimation,
+          builder: (context, child) {
+            final t = Curves.easeOutCubic.transform(_threadAnimation.value);
+            return Stack(
+              fit: StackFit.expand,
+              children: [
+                Offstage(
+                  offstage: t == 1,
+                  child: IgnorePointer(
+                    ignoring: thread != null,
+                    child: FractionalTranslation(
+                      translation: Offset(-0.15 * t, 0),
+                      child: mainSheet,
+                    ),
+                  ),
+                ),
+                if (child != null)
+                  FractionalTranslation(
+                    translation: Offset(1 - t, 0),
+                    child: IgnorePointer(
+                      ignoring: _closingThread,
+                      child: child,
+                    ),
+                  ),
+              ],
+            );
+          },
+          child: thread == null
+              ? null
+              : _ShortVideoCommentSheet(
+                  key: ValueKey(thread.rpid),
+                  aid: widget.aid,
+                  root: thread,
+                  commentCount:
+                      thread.rcount ??
+                      thread.count ??
+                      thread.replies?.length ??
+                      0,
+                  loadReplies: widget.loadReplies,
+                  loadThread: widget.loadThread,
+                  sendComment: widget.sendComment,
+                  likeComment: widget.likeComment,
+                  pendingLikes: _pendingLikes,
+                  onLikeChanged: () {
+                    if (mounted) setState(() {});
+                  },
+                  focusComposer: _focusThreadComposer,
+                  onBack: _closeThread,
+                  onClose: widget.onClose,
+                  onCountChanged: (count) {
+                    if (mounted) setState(() => thread.rcount = count);
+                  },
+                  onReplySent: () {
+                    if (!mounted) return;
+                    setState(() => _count++);
+                    widget.onCountChanged(_count);
+                  },
+                ),
+        ),
       ),
     );
   }
@@ -454,92 +542,78 @@ class _ShortVideoCommentSheetState extends State<_ShortVideoCommentSheet> {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
       ),
-      child: AnimatedPadding(
-        duration: const Duration(milliseconds: 180),
-        padding: EdgeInsets.only(
-          bottom: MediaQuery.viewInsetsOf(context).bottom,
-        ),
-        child: Column(
-          children: [
-            const SizedBox(height: 8),
-            Container(
-              width: 38,
-              height: 4,
-              decoration: BoxDecoration(
-                color: colorScheme.outlineVariant,
-                borderRadius: BorderRadius.circular(4),
-              ),
+      child: Column(
+        children: [
+          const SizedBox(height: 8),
+          Container(
+            width: 38,
+            height: 4,
+            decoration: BoxDecoration(
+              color: colorScheme.outlineVariant,
+              borderRadius: BorderRadius.circular(4),
             ),
-            GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onVerticalDragEnd: (details) {
-                if ((details.primaryVelocity ?? 0) > 250) widget.onClose();
-              },
-              child: SizedBox(
-                height: 48,
-                child: Row(
-                  children: [
-                    SizedBox(
-                      width: 92,
-                      child: TextButton.icon(
-                        onPressed: widget.root == null
-                            ? _toggleSort
-                            : widget.onBack,
-                        icon: Icon(
-                          widget.root == null
-                              ? Icons.swap_vert_rounded
-                              : Icons.arrow_back_ios_new_rounded,
-                          size: 17,
-                        ),
-                        label: Text(
-                          widget.root == null
-                              ? (_sort == 1 ? '热门' : '最新')
-                              : '评论',
-                        ),
-                        style: TextButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(horizontal: 8),
-                          minimumSize: Size.zero,
-                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        ),
-                      ),
+          ),
+          SizedBox(
+            height: 48,
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 92,
+                  child: TextButton.icon(
+                    onPressed: widget.root == null
+                        ? _toggleSort
+                        : widget.onBack,
+                    icon: Icon(
+                      widget.root == null
+                          ? Icons.swap_vert_rounded
+                          : Icons.arrow_back_ios_new_rounded,
+                      size: 17,
                     ),
-                    Expanded(
-                      child: Text(
-                        widget.root != null
-                            ? '${NumUtils.numFormat(_count)} 条回复'
-                            : (_count > 0
-                                  ? '${NumUtils.numFormat(_count)} 条评论'
-                                  : '评论'),
-                        textAlign: TextAlign.center,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
+                    label: Text(
+                      widget.root == null ? (_sort == 1 ? '热门' : '最新') : '评论',
                     ),
-                    SizedBox(
-                      width: 92,
-                      child: Align(
-                        alignment: Alignment.centerRight,
-                        child: IconButton(
-                          tooltip: '关闭评论',
-                          onPressed: widget.onClose,
-                          icon: const Icon(Icons.close_rounded),
-                        ),
-                      ),
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     ),
-                  ],
+                  ),
                 ),
-              ),
+                Expanded(
+                  child: Text(
+                    widget.root != null
+                        ? '${NumUtils.numFormat(_count)} 条回复'
+                        : (_count > 0
+                              ? '${NumUtils.numFormat(_count)} 条评论'
+                              : '评论'),
+                    textAlign: TextAlign.center,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                SizedBox(
+                  width: 92,
+                  child: Align(
+                    alignment: Alignment.centerRight,
+                    child: IconButton(
+                      tooltip: '关闭评论',
+                      onPressed: widget.onClose,
+                      icon: const Icon(Icons.close_rounded),
+                    ),
+                  ),
+                ),
+              ],
             ),
-            Divider(height: 1, color: colorScheme.outlineVariant),
-            Expanded(child: _buildCommentBody(colorScheme)),
-            Divider(height: 1, color: colorScheme.outlineVariant),
-            _buildComposer(colorScheme),
-          ],
-        ),
+          ),
+          Divider(height: 1, color: colorScheme.outlineVariant),
+          Expanded(child: _buildCommentBody(colorScheme)),
+          Divider(height: 1, color: colorScheme.outlineVariant),
+          _buildComposer(colorScheme),
+        ],
       ),
     );
   }

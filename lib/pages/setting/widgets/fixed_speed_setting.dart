@@ -86,6 +86,7 @@ class FixedSpeedSetting extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           SwitchListTile(
+            secondary: portrait ? const Icon(Icons.speed) : null,
             title: Text(title),
             subtitle: Text(
               portrait ? '开启后记住所选倍率；关闭后仅当前视频临时调速' : '开启后记住所选倍率',

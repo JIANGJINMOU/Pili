@@ -1,4 +1,7 @@
+import 'package:PiliPlus/pages/short_video/display_preferences.dart';
 import 'package:PiliPlus/pages/short_video/controller.dart';
+import 'package:PiliPlus/pages/setting/widgets/short_video_subtitle_setting.dart';
+import 'package:PiliPlus/pages/setting/widgets/short_video_danmaku_setting.dart';
 import 'package:PiliPlus/pages/short_video/recommendation/recommendation_storage.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
@@ -10,10 +13,10 @@ import 'package:PiliPlus/utils/storage_key.dart';
 import 'package:material_ui/material_ui.dart';
 
 List<SettingsModel> get shortVideoSettings => [
-  const WidgetModel(child: _ShortVideoSection('基础播放')),
+  const WidgetModel(child: ShortVideoSettingSection('基础播放')),
   const SwitchModel(
     title: '启用竖屏视频',
-    subtitle: '立即生效；关闭后隐藏首页入口，停止竖屏播放，可在此重新开启',
+    subtitle: '立即生效；关闭后隐藏竖屏入口，停止竖屏播放，可在此重新开启',
     leading: Icon(Icons.smart_display_outlined),
     setKey: SettingBoxKey.shortVideoEnabled,
     defaultVal: true,
@@ -31,26 +34,63 @@ List<SettingsModel> get shortVideoSettings => [
     leading: Icon(Icons.skip_next_outlined),
     setKey: SettingBoxKey.shortVideoAutoNext,
   ),
-  const WidgetModel(child: _ShortVideoSection('缓冲与显示')),
-  const SwitchModel(
-    title: '预加载下一条视频',
-    subtitle: '停稳 400ms 后仅预加载下一条；默认仅 Wi-Fi 或有线网络',
-    leading: Icon(Icons.downloading_outlined),
-    setKey: SettingBoxKey.shortVideoPreload,
-    defaultVal: true,
-  ),
   const SwitchModel(
     title: '竖屏默认静音',
     subtitle: '每次进入竖屏时静音；播放页仍可临时切换声音',
     leading: Icon(Icons.volume_off_outlined),
     setKey: SettingBoxKey.shortVideoMuted,
   ),
+  const WidgetModel(
+    searchTitle: '竖屏固定倍速',
+    searchSubtitle: '固定倍率 长按加速 播放速度',
+    child: FixedSpeedSetting(portrait: true, switchOnly: true),
+  ),
+  const WidgetModel(child: ShortVideoSettingSection('画面与手势')),
   const SwitchModel(
-    title: '竖向视频铺满屏幕',
-    subtitle: '开启可能裁切边缘；关闭显示完整画面，横向视频始终完整显示',
-    leading: Icon(Icons.fit_screen_outlined),
-    setKey: SettingBoxKey.shortVideoFill,
-    defaultVal: true,
+    title: '清屏播放',
+    subtitle: '默认隐藏竖屏控件；双击画面临时显示或隐藏，字幕和弹幕不受影响',
+    leading: Icon(Icons.hide_source_outlined),
+    setKey: SettingBoxKey.shortVideoCleanScreen,
+  ),
+  const SwitchModel(
+    title: '显示系统顶部状态栏',
+    subtitle: '竖屏播放时显示时间、电量和通知图标；关闭保持沉浸播放',
+    leading: Icon(Icons.space_dashboard_outlined),
+    setKey: SettingBoxKey.shortVideoShowStatusBar,
+  ),
+  PopupModel<ShortVideoAspect>(
+    title: '画面比例',
+    leading: const Icon(Icons.aspect_ratio),
+    value: () => ShortVideoPreferences.read().aspect,
+    items: ShortVideoAspect.values,
+    onSelected: (value, refresh) async {
+      try {
+        await GStorage.setting.put(SettingBoxKey.shortVideoAspect, value.name);
+        refresh();
+      } catch (_) {
+        SmartDialog.showToast('画面比例保存失败，请重试');
+      }
+    },
+  ),
+  PopupModel<ShortVideoFit>(
+    title: '画面适配',
+    leading: const Icon(Icons.fit_screen_outlined),
+    value: () => ShortVideoPreferences.read().fit,
+    items: ShortVideoFit.values,
+    onSelected: (value, refresh) async {
+      try {
+        await GStorage.setting.put(SettingBoxKey.shortVideoFit, value.name);
+        refresh();
+      } catch (_) {
+        SmartDialog.showToast('画面适配保存失败，请重试');
+      }
+    },
+  ),
+  const WidgetModel(
+    child: Padding(
+      padding: EdgeInsets.fromLTRB(16, 0, 16, 12),
+      child: Text('默认原始比例、完整显示；固定比例会改变画面宽高，铺满裁切会隐藏边缘，拉伸铺满可能变形。'),
+    ),
   ),
   PopupModel<ShortVideoSwipeStyle>(
     title: '竖屏滑动风格',
@@ -69,13 +109,43 @@ List<SettingsModel> get shortVideoSettings => [
     setKey: SettingBoxKey.shortVideoHaptics,
     defaultVal: true,
   ),
-  const WidgetModel(child: _ShortVideoSection('播放速度')),
-  const WidgetModel(
-    searchTitle: '竖屏固定倍速',
-    searchSubtitle: '固定倍率 长按加速 播放速度',
-    child: FixedSpeedSetting(portrait: true),
+  const WidgetModel(child: ShortVideoSettingSection('字幕设置')),
+  const SwitchModel(
+    title: '竖屏字幕',
+    subtitle: '与播放页字幕开关联动；无可用字幕时会提示',
+    leading: Icon(Icons.closed_caption_outlined),
+    setKey: SettingBoxKey.shortVideoSubtitles,
   ),
-  const WidgetModel(child: _ShortVideoSection('推荐与隐私')),
+  const WidgetModel(
+    searchTitle: '竖屏字幕样式',
+    searchSubtitle: '语言 位置 字号 颜色 背景 加粗 阴影 对齐 行数',
+    child: ShortVideoSubtitleSetting(),
+  ),
+  const WidgetModel(child: ShortVideoSettingSection('弹幕设置')),
+  const SwitchModel(
+    title: '竖屏弹幕',
+    subtitle: '与竖屏底栏开关联动，仅当前视频加载弹幕',
+    leading: Icon(Icons.subtitles_outlined),
+    setKey: SettingBoxKey.shortVideoDanmaku,
+  ),
+  const WidgetModel(
+    searchTitle: '竖屏弹幕样式',
+    searchSubtitle: '字号 不透明度 显示区域',
+    child: ExpansionTile(
+      leading: Icon(Icons.format_size),
+      title: Text('弹幕样式'),
+      subtitle: Text('字号、不透明度和显示区域'),
+      children: [ShortVideoDanmakuSetting()],
+    ),
+  ),
+  const WidgetModel(child: ShortVideoSettingSection('网络与推荐')),
+  const SwitchModel(
+    title: '预加载下一条视频',
+    subtitle: '停稳 400ms 后仅预加载下一条；默认仅 Wi-Fi 或有线网络',
+    leading: Icon(Icons.downloading_outlined),
+    setKey: SettingBoxKey.shortVideoPreload,
+    defaultVal: true,
+  ),
   const SwitchModel(
     title: '本地个性化推荐',
     subtitle: '根据有效观看与互动调整排序；画像仅保存在本机，关闭后停止学习兴趣',
@@ -132,8 +202,8 @@ List<SettingsModel> get shortVideoSettings => [
   ),
 ];
 
-class _ShortVideoSection extends StatelessWidget {
-  const _ShortVideoSection(this.title);
+class ShortVideoSettingSection extends StatelessWidget {
+  const ShortVideoSettingSection(this.title, {super.key});
   final String title;
   @override
   Widget build(BuildContext context) => Padding(

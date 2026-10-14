@@ -1,4 +1,16 @@
+import 'package:PiliPlus/pages/short_video/progress_bar.dart';
+
 import 'dart:async';
+
+import 'package:PiliPlus/pages/short_video/launch.dart';
+import 'package:PiliPlus/pages/short_video/system_ui.dart';
+
+import 'package:PiliPlus/pages/short_video/comment_layout.dart';
+
+import 'package:PiliPlus/pages/short_video/subtitles.dart';
+
+import 'package:PiliPlus/pages/short_video/danmaku.dart';
+import 'package:PiliPlus/models/common/video/video_quality.dart';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 
@@ -27,6 +39,7 @@ import 'package:PiliPlus/pages/short_video/preferences.dart';
 import 'package:PiliPlus/models/common/setting_type.dart';
 import 'package:PiliPlus/pages/setting/common_setting.dart';
 import 'package:PiliPlus/utils/storage.dart';
+import 'package:PiliPlus/utils/storage_key.dart';
 import 'package:PiliPlus/plugin/pl_player/utils/fullscreen.dart';
 import 'package:PiliPlus/services/account_service.dart';
 import 'package:PiliPlus/services/logger.dart';
@@ -36,7 +49,6 @@ import 'package:PiliPlus/utils/num_utils.dart';
 import 'package:PiliPlus/utils/page_utils.dart';
 import 'package:PiliPlus/utils/platform_utils.dart';
 import 'package:PiliPlus/utils/share_utils.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
@@ -49,9 +61,11 @@ class ShortVideoPage extends StatefulWidget {
     super.key,
     this.playerFactory = createShortVideoPlayer,
     this.networkAllowed,
+    this.initialLaunch,
   });
   final ShortVideoPlayerFactory playerFactory;
   final Future<bool> Function()? networkAllowed;
+  final ShortVideoLaunch? initialLaunch;
 
   @override
   State<ShortVideoPage> createState() => _ShortVideoPageState();
@@ -77,13 +91,13 @@ class _ShortVideoPageState extends State<ShortVideoPage>
   late final ShortVideoPreloadScheduler _preloader;
   final _playerPool = ShortVideoPlayerPool();
   int _failures = 0;
-  Timer? _failureTimer;
   bool _rebasing = false;
+  Worker? _launchWorker;
 
   bool get _preloadAllowed =>
       _preferences.enabled &&
       _preferences.preload &&
-      _failures < 3 &&
+      _failures == 0 &&
       _appActive &&
       !_settingsOpen &&
       !_overlayOpen;
@@ -113,15 +127,12 @@ class _ShortVideoPageState extends State<ShortVideoPage>
   }
 
   void _playbackFailed(int index) {
-    if (!mounted || index != _currentIndex || _failureTimer != null) return;
-    _failures++;
-    if (_failures >= 3) {
-      setState(() {});
-      return;
-    }
-    _failureTimer = Timer(const Duration(milliseconds: 700), () {
-      _failureTimer = null;
-      if (mounted && index == _currentIndex) unawaited(_goToNext(index));
+    if (!mounted || index != _currentIndex) return;
+    // Never skip the current video just because the network is unavailable.
+    _preloader.cancel();
+    setState(() {
+      _failures = 1;
+      _preloadIndex = null;
     });
   }
 
@@ -136,7 +147,27 @@ class _ShortVideoPageState extends State<ShortVideoPage>
       }
     }, networkAllowed: _networkAllowed);
     if (_preferences.preload && _preferences.enabled) _preloader.schedule(0);
-    _controller = Get.put(ShortVideoController(preferences: _preferences));
+    final args = Get.arguments;
+    _controller = Get.put(
+      ShortVideoController(
+        preferences: _preferences,
+        initialLaunch:
+            widget.initialLaunch ?? (args is ShortVideoLaunch ? args : null),
+      ),
+    );
+    _launchWorker = ever(_controller.launchRevision, (_) {
+      if (!mounted) return;
+      _preloader.cancel();
+      setState(() {
+        _currentIndex = _settledIndex = 0;
+        _preloadIndex = null;
+        _scrolling = _overlayOpen = false;
+        _failures = 0;
+      });
+      if (_pageController.hasClients) _pageController.jumpToPage(0);
+      _schedulePreload();
+      WidgetsBinding.instance.addPostFrameCallback((_) => _applySystemBars());
+    });
     _settingsSubscription = GStorage.setting.watch().listen((event) {
       if (!mounted || !event.key.toString().startsWith('shortVideo')) return;
       final previous = _preferences;
@@ -149,6 +180,9 @@ class _ShortVideoPageState extends State<ShortVideoPage>
         if (previous.muted != _preferences.muted) _muted = _preferences.muted;
       });
       _controller.preferences = _preferences;
+      if (previous.showStatusBar != _preferences.showStatusBar) {
+        _applySystemBars();
+      }
       if (_preferences.enabled &&
           !previous.enabled &&
           _controller.items.isEmpty) {
@@ -162,13 +196,23 @@ class _ShortVideoPageState extends State<ShortVideoPage>
     WidgetsBinding.instance.addObserver(this);
     if (PlatformUtils.isMobile) {
       portraitUpMode();
-      hideSystemBar();
+      WidgetsBinding.instance.addPostFrameCallback((_) => _applySystemBars());
+    }
+  }
+
+  void _applySystemBars() {
+    if (mounted &&
+        PlatformUtils.isMobile &&
+        !_settingsOpen &&
+        ModalRoute.of(context)?.isCurrent == true) {
+      unawaited(applyShortVideoSystemBars(_preferences.showStatusBar));
     }
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final active = state == AppLifecycleState.resumed;
+    if (active) _applySystemBars();
     if (active != _appActive && mounted) {
       setState(() => _appActive = active);
       _schedulePreload();
@@ -179,8 +223,8 @@ class _ShortVideoPageState extends State<ShortVideoPage>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _settingsSubscription?.cancel();
+    _launchWorker?.dispose();
     _preloader.dispose();
-    _failureTimer?.cancel();
     _pageController.dispose();
     Get.delete<ShortVideoController>();
     if (PlatformUtils.isMobile) {
@@ -192,8 +236,6 @@ class _ShortVideoPageState extends State<ShortVideoPage>
 
   Future<void> _refresh() async {
     _failures = 0;
-    _failureTimer?.cancel();
-    _failureTimer = null;
     _preloader.cancel();
     if (mounted) {
       setState(() {
@@ -270,7 +312,7 @@ class _ShortVideoPageState extends State<ShortVideoPage>
       if (mounted) {
         setState(() => _settingsOpen = false);
         _schedulePreload();
-        if (PlatformUtils.isMobile) hideSystemBar();
+        _applySystemBars();
       }
     }
   }
@@ -289,169 +331,165 @@ class _ShortVideoPageState extends State<ShortVideoPage>
         ),
       );
     }
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: Obx(() {
-        if (_controller.isInitialLoading.value && _controller.items.isEmpty) {
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: const SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.light,
+        statusBarBrightness: Brightness.dark,
+        systemStatusBarContrastEnforced: false,
+      ),
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        resizeToAvoidBottomInset: false,
+        body: Obx(() {
+          if (_controller.items.isEmpty) {
+            final loading = _controller.isInitialLoading.value;
+            return Stack(
+              fit: StackFit.expand,
+              children: [
+                _CenteredStatus(
+                  icon: loading
+                      ? Icons.smart_display_rounded
+                      : Icons.cloud_off_rounded,
+                  message: loading
+                      ? '正在准备竖屏视频…'
+                      : (_controller.errorMessage.value ?? '加载失败'),
+                  loading: loading,
+                  actionText: loading ? null : '重试',
+                  onAction: loading ? null : _refresh,
+                ),
+                Positioned(
+                  top: MediaQuery.paddingOf(context).top + 4,
+                  left: 8,
+                  child: _PortraitBackButton(onPressed: Get.back),
+                ),
+              ],
+            );
+          }
           return Stack(
+            fit: StackFit.expand,
             children: [
-              const _CenteredStatus(
-                icon: Icons.smart_display_rounded,
-                message: '正在准备竖屏视频…',
-                loading: true,
+              ShortVideoPager(
+                key: ValueKey(_controller.launchRevision.value),
+                controller: _pageController,
+                style: _preferences.swipeStyle,
+                scrollEnabled: !_overlayOpen && !_settingsOpen,
+                itemCount: _controller.items.length,
+                itemKey: (index) => ValueKey(_controller.items[index].aid),
+                findChildIndexCallback: (key) {
+                  final index = _controller.items.indexWhere(
+                    (item) => ValueKey(item.aid) == key,
+                  );
+                  return index < 0 ? null : index;
+                },
+                onScrollingChanged: (scrolling) {
+                  if (mounted && scrolling != _scrolling) {
+                    setState(() => _scrolling = scrolling);
+                    // Stop new speculative work, but do not revoke an already
+                    // authorized next-player preparation halfway through open().
+                    if (scrolling) _preloader.cancel();
+                  }
+                },
+                onSettled: (index) {
+                  if (!mounted || _rebasing) return;
+                  if (_settledIndex != index) {
+                    if (_preferences.haptics) HapticFeedback.selectionClick();
+                    _controller.onPageChanged(index);
+                  }
+                  setState(() {
+                    _settledIndex = index;
+                    _currentIndex = index;
+                  });
+                  _rebasing = true;
+                  final removed = _controller.trimBefore(index);
+                  if (removed > 0 && _pageController.hasClients) {
+                    _currentIndex = index - removed;
+                    _settledIndex = _currentIndex;
+                    _pageController.jumpToPage(_currentIndex);
+                    setState(() {});
+                  }
+                  _rebasing = false;
+                  _schedulePreload(preserveAuthorized: true);
+                },
+                // Crossing the halfway point isn't a committed video change.
+                // Keep ownership stable until the gesture/settling has finished.
+                onPageChanged: (_) {},
+                itemBuilder: (context, index) {
+                  final item = _controller.items[index];
+                  return ShortVideoItem(
+                    key: ValueKey(item.aid ?? item.bvid),
+                    item: item,
+                    controller: _controller,
+                    playerFactory: widget.playerFactory,
+                    playerPool: _playerPool,
+                    current: index == _currentIndex,
+                    scrolling: _scrolling,
+                    onPlaybackError: () => _playbackFailed(index),
+                    onPlaybackReady: () {
+                      if (mounted && index == _currentIndex) {
+                        _failures = 0;
+                        // A small first batch must not strand the user on one
+                        // looping video. Refill only after playback is ready.
+                        if (_controller.items.length - index < 6) {
+                          unawaited(_controller.loadMore());
+                        }
+                      }
+                    },
+                    active:
+                        index == _currentIndex && _appActive && !_settingsOpen,
+                    preload:
+                        _preloadAllowed &&
+                        index == _preloadIndex &&
+                        index == _currentIndex + 1,
+                    // Losing focus (notification shade, lock screen) must pause,
+                    // not destroy the current session and reset its position.
+                    retain:
+                        index == _currentIndex ||
+                        ((index - _currentIndex).abs() <= 1 && _appActive),
+                    preferences: _preferences,
+                    muted: _muted,
+                    onToggleMuted: _toggleMuted,
+                    onRefresh: _refresh,
+                    onNext: () => _goToNext(index),
+                    onSettings: _openSettings,
+                    onPanelChanged: (open) {
+                      if (mounted && open != _overlayOpen) {
+                        setState(() => _overlayOpen = open);
+                        _schedulePreload();
+                      }
+                    },
+                  );
+                },
               ),
-              SafeArea(
-                child: BackButton(onPressed: Get.back, color: Colors.white),
-              ),
+              if (_controller.isLoadingMore.value)
+                Positioned(
+                  top: MediaQuery.paddingOf(context).top + 58,
+                  left: 0,
+                  right: 0,
+                  child: const Center(
+                    child: _FeedStatusChip(
+                      icon: Icons.downloading_rounded,
+                      label: '正在加载更多',
+                    ),
+                  ),
+                )
+              else if (_controller.loadMoreError.value != null)
+                Positioned(
+                  top: MediaQuery.paddingOf(context).top + 58,
+                  left: 0,
+                  right: 0,
+                  child: Center(
+                    child: _FeedStatusChip(
+                      icon: Icons.refresh_rounded,
+                      label: _controller.loadMoreError.value!,
+                      onTap: _controller.loadMore,
+                    ),
+                  ),
+                ),
             ],
           );
-        }
-        if (_controller.items.isEmpty) {
-          return Stack(
-            children: [
-              _CenteredStatus(
-                icon: Icons.cloud_off_rounded,
-                message: _controller.errorMessage.value ?? '加载失败',
-                actionText: '重试',
-                onAction: _refresh,
-              ),
-              SafeArea(
-                child: BackButton(onPressed: Get.back, color: Colors.white),
-              ),
-            ],
-          );
-        }
-        return Stack(
-          fit: StackFit.expand,
-          children: [
-            ShortVideoPager(
-              controller: _pageController,
-              style: _preferences.swipeStyle,
-              scrollEnabled: !_overlayOpen && !_settingsOpen,
-              itemCount: _controller.items.length,
-              itemKey: (index) => ValueKey(_controller.items[index].aid),
-              findChildIndexCallback: (key) {
-                final index = _controller.items.indexWhere(
-                  (item) => ValueKey(item.aid) == key,
-                );
-                return index < 0 ? null : index;
-              },
-              onScrollingChanged: (scrolling) {
-                if (mounted && scrolling != _scrolling) {
-                  setState(() => _scrolling = scrolling);
-                  // Stop new speculative work, but do not revoke an already
-                  // authorized next-player preparation halfway through open().
-                  if (scrolling) _preloader.cancel();
-                }
-              },
-              onSettled: (index) {
-                if (!mounted || _rebasing) return;
-                if (_settledIndex != index) {
-                  if (_preferences.haptics) HapticFeedback.selectionClick();
-                  _controller.onPageChanged(index);
-                }
-                setState(() {
-                  _settledIndex = index;
-                  _currentIndex = index;
-                });
-                _rebasing = true;
-                final removed = _controller.trimBefore(index);
-                if (removed > 0 && _pageController.hasClients) {
-                  _currentIndex = index - removed;
-                  _settledIndex = _currentIndex;
-                  _pageController.jumpToPage(_currentIndex);
-                  setState(() {});
-                }
-                _rebasing = false;
-                _schedulePreload(preserveAuthorized: true);
-              },
-              // Crossing the halfway point isn't a committed video change.
-              // Keep ownership stable until the gesture/settling has finished.
-              onPageChanged: (_) {},
-              itemBuilder: (context, index) {
-                final item = _controller.items[index];
-                return ShortVideoItem(
-                  key: ValueKey(item.aid ?? item.bvid),
-                  item: item,
-                  controller: _controller,
-                  playerFactory: widget.playerFactory,
-                  playerPool: _playerPool,
-                  current: index == _currentIndex,
-                  scrolling: _scrolling,
-                  onPlaybackError: () => _playbackFailed(index),
-                  onPlaybackReady: () {
-                    if (mounted && index == _currentIndex) {
-                      _failures = 0;
-                      _failureTimer?.cancel();
-                      _failureTimer = null;
-                    }
-                  },
-                  active:
-                      index == _currentIndex && _appActive && !_settingsOpen,
-                  preload:
-                      _preloadAllowed &&
-                      index == _preloadIndex &&
-                      index == _currentIndex + 1,
-                  // Losing focus (notification shade, lock screen) must pause,
-                  // not destroy the current session and reset its position.
-                  retain:
-                      index == _currentIndex ||
-                      ((index - _currentIndex).abs() <= 1 && _appActive),
-                  preferences: _preferences,
-                  muted: _muted,
-                  onToggleMuted: _toggleMuted,
-                  onRefresh: _refresh,
-                  onNext: () => _goToNext(index),
-                  onSettings: _openSettings,
-                  onPanelChanged: (open) {
-                    if (mounted && open != _overlayOpen) {
-                      setState(() => _overlayOpen = open);
-                      _schedulePreload();
-                    }
-                  },
-                );
-              },
-            ),
-            if (_failures >= 3)
-              Positioned.fill(
-                child: ColoredBox(
-                  color: Colors.black87,
-                  child: _CenteredStatus(
-                    icon: Icons.error_outline,
-                    message: '连续播放失败，请检查网络后重新加载',
-                    actionText: '重新加载',
-                    onAction: _refresh,
-                  ),
-                ),
-              ),
-            if (_controller.isLoadingMore.value)
-              Positioned(
-                top: MediaQuery.paddingOf(context).top + 58,
-                left: 0,
-                right: 0,
-                child: const Center(
-                  child: _FeedStatusChip(
-                    icon: Icons.downloading_rounded,
-                    label: '正在加载更多',
-                  ),
-                ),
-              )
-            else if (_controller.loadMoreError.value != null)
-              Positioned(
-                top: MediaQuery.paddingOf(context).top + 58,
-                left: 0,
-                right: 0,
-                child: Center(
-                  child: _FeedStatusChip(
-                    icon: Icons.refresh_rounded,
-                    label: _controller.loadMoreError.value!,
-                    onTap: _controller.loadMore,
-                  ),
-                ),
-              ),
-          ],
-        );
-      }),
+        }),
+      ),
     );
   }
 }
@@ -507,13 +545,75 @@ class ShortVideoItem extends StatefulWidget {
 enum _ShortVideoPanel { none, coin }
 
 class _ShortVideoItemState extends State<ShortVideoItem>
-    with WidgetsBindingObserver {
+    with WidgetsBindingObserver, SingleTickerProviderStateMixin {
   Player? _player;
   ShortVideoWatchSession _watch = ShortVideoWatchSession();
   bool _exposed = false;
   int _profileRevision = -1;
   bool _completionHandled = false;
   bool _reportedError = false;
+  Timer? _retryTimer, _stallTimer, _errorConfirmationTimer;
+  String? _pendingPlaybackError;
+  Duration _healthyProgress = Duration.zero;
+  bool _retrying = false;
+  int _retryAttempts = 0;
+  Duration _resumePosition = Duration.zero;
+  int? _resumeQuality;
+
+  void _cancelRecoveryTimers() {
+    _errorConfirmationTimer?.cancel();
+    _errorConfirmationTimer = null;
+    _retryTimer?.cancel();
+    _retryTimer = null;
+    _stallTimer?.cancel();
+    _stallTimer = null;
+  }
+
+  void _scheduleRecovery() {
+    if (!mounted ||
+        !_canPlay ||
+        _error == null ||
+        _retrying ||
+        _retryTimer != null ||
+        _retryAttempts >= 3) {
+      return;
+    }
+    _retryTimer = Timer(Duration(seconds: 1 << _retryAttempts), () {
+      _retryTimer = null;
+      if (mounted && _canPlay && _error != null) {
+        unawaited(_retry(automatic: true));
+      }
+    });
+  }
+
+  void _updateRecoveryTimers() {
+    if (!_canPlay) {
+      _cancelRecoveryTimers();
+      return;
+    }
+    if (_pendingPlaybackError != null && _error == null && !_loading) {
+      _errorConfirmationTimer ??= Timer(const Duration(seconds: 3), () {
+        _errorConfirmationTimer = null;
+        if (!mounted || !_canPlay || _pendingPlaybackError == null) return;
+        _setState(() => _error = _pendingPlaybackError);
+        _pendingPlaybackError = null;
+        _reportError();
+      });
+    }
+    if (_error != null) _scheduleRecovery();
+    if (_buffering && !_loading && !_retrying && _retryAttempts < 3) {
+      _stallTimer ??= Timer(const Duration(seconds: 12), () {
+        _stallTimer = null;
+        if (mounted && _canPlay && _buffering) {
+          _setState(() => _error = '网络缓冲超时，请稍候或重新加载');
+          _reportError();
+        }
+      });
+    } else {
+      _stallTimer?.cancel();
+      _stallTimer = null;
+    }
+  }
 
   Future<void> _disposePlayer(Player player) async {
     try {
@@ -535,6 +635,7 @@ class _ShortVideoItemState extends State<ShortVideoItem>
         !_buffering &&
         (_videoController == null || _firstFrameReady) &&
         !_speedMenuOpen &&
+        !_scrubbing &&
         !_commentsOpen &&
         _panel == _ShortVideoPanel.none;
     if (_watch.closed && watching) _watch = ShortVideoWatchSession();
@@ -574,12 +675,16 @@ class _ShortVideoItemState extends State<ShortVideoItem>
   }
 
   void _reportError() {
+    _healthyProgress = Duration.zero;
+    _scheduleRecovery();
     _watch.failed = true;
     _watch.playing(false);
     if (widget.active && !_reportedError) {
       _reportedError = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && widget.active) widget.onPlaybackError?.call();
+        if (mounted && widget.active && _error != null) {
+          widget.onPlaybackError?.call();
+        }
       });
     }
   }
@@ -603,7 +708,18 @@ class _ShortVideoItemState extends State<ShortVideoItem>
   bool _favoriteBusy = false;
   bool _isFollowing = false;
   bool _followBusy = false;
-  bool _cleanScreen = false;
+  late bool _cleanScreen = widget.preferences.cleanScreen;
+  late bool _subtitlesEnabled = widget.preferences.subtitlesEnabled;
+
+  bool _qualityBusy = false;
+  bool _scrubbing = false;
+  late bool _danmakuEnabled =
+      GStorage.setting.get(
+        SettingBoxKey.shortVideoDanmaku,
+        defaultValue: false,
+      ) ==
+      true;
+  int? _selectedQuality;
   bool _speeding = false;
   bool _speedMenuOpen = false;
   double _temporaryRate = 1;
@@ -626,6 +742,12 @@ class _ShortVideoItemState extends State<ShortVideoItem>
   String? _authorFace;
   _ShortVideoPanel _panel = _ShortVideoPanel.none;
   bool _commentsOpen = false;
+  late final AnimationController _commentAnimation = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 280),
+    reverseDuration: const Duration(milliseconds: 220),
+  );
+  final ValueNotifier<double> _commentExtent = ValueNotifier(.5);
   bool _firstFrameReady = false;
   bool _userPaused = false;
   bool _routeCovered = false;
@@ -634,7 +756,11 @@ class _ShortVideoItemState extends State<ShortVideoItem>
       WidgetsBinding.instance.lifecycleState == null ||
       WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
   bool get _canPlay =>
-      widget.active && _foreground && !_userPaused && !_routeCovered;
+      widget.active &&
+      _foreground &&
+      !_userPaused &&
+      !_routeCovered &&
+      !_qualityBusy;
 
   String get _bvid => widget.item.bvid ?? IdUtils.av2bv(widget.item.aid!);
 
@@ -647,6 +773,7 @@ class _ShortVideoItemState extends State<ShortVideoItem>
     _authorMid = widget.item.owner.mid;
     _authorName = widget.item.owner.name;
     _isFollowing = widget.item.isFollowed;
+    _resumePosition = widget.controller.takeInitialPosition(widget.item);
     _userPaused = !widget.preferences.autoPlay;
     WidgetsBinding.instance.addObserver(this);
     unawaited(_syncPlayback());
@@ -657,6 +784,11 @@ class _ShortVideoItemState extends State<ShortVideoItem>
     super.didUpdateWidget(oldWidget);
     if (oldWidget.preferences.personalized != widget.preferences.personalized) {
       _watch = ShortVideoWatchSession();
+    }
+    _danmakuEnabled = widget.preferences.danmakuEnabled;
+    _subtitlesEnabled = widget.preferences.subtitlesEnabled;
+    if (oldWidget.preferences.cleanScreen != widget.preferences.cleanScreen) {
+      _cleanScreen = widget.preferences.cleanScreen;
     }
     _trackWatch();
     if (!widget.current && !widget.scrolling) {
@@ -699,17 +831,21 @@ class _ShortVideoItemState extends State<ShortVideoItem>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _cancelRecoveryTimers();
     _generation++;
     _playbackRevision++;
     _disposeSubscriptions();
     _watch.playing(false);
     _settleWatch();
     if (_player case final player?) unawaited(_disposePlayer(player));
+    _commentAnimation.dispose();
+    _commentExtent.dispose();
     _positionNotifier.dispose();
     super.dispose();
   }
 
   Future<void> _syncPlayback() async {
+    _updateRecoveryTimers();
     _trackWatch();
     final revision = ++_playbackRevision;
     try {
@@ -776,9 +912,13 @@ class _ShortVideoItemState extends State<ShortVideoItem>
       });
     }
     try {
-      final source = await widget.controller.sourceFor(widget.item);
+      final source = await widget.controller
+          .sourceFor(widget.item)
+          .timeout(const Duration(seconds: 20));
       if (!_mayPrepare(generation)) return;
-      if (widget.preferences.onlyVertical && !source.isVertical) {
+      if (widget.preferences.onlyVertical &&
+          !source.isVertical &&
+          !widget.controller.isExplicitVideo(widget.item)) {
         throw StateError('该视频不是竖向视频');
       }
       final handle = widget.playerPool == null
@@ -805,6 +945,9 @@ class _ShortVideoItemState extends State<ShortVideoItem>
       attached = true;
       _videoController = videoController;
       _source = source;
+      _selectedQuality = source.qualityUrls.containsKey(_resumeQuality)
+          ? _resumeQuality
+          : source.quality;
       _listenTo(player);
       _setState(() => _firstFrameReady = false);
       if (videoController != null) {
@@ -821,19 +964,28 @@ class _ShortVideoItemState extends State<ShortVideoItem>
         );
       }
       await player.setVolume(0);
-      await player.open(
-        Media(
-          source.url,
-          extras: const {
-            'cache': 'yes',
-            'cache-secs': '6',
-            'demuxer-max-bytes': '33554432',
-          },
-        ),
-        play: false,
-      );
+      await player
+          .open(
+            Media(
+              source.qualityUrls[_selectedQuality] ?? source.url,
+              extras: const {
+                'cache': 'yes',
+                'cache-secs': '6',
+                'demuxer-max-bytes': '33554432',
+              },
+            ),
+            play: false,
+          )
+          .timeout(const Duration(seconds: 20));
       if (!_shouldKeepPlayer(generation)) return;
+      if (_resumePosition > Duration.zero) {
+        await player.seek(_resumePosition);
+        if (!_shouldKeepPlayer(generation)) return;
+        _positionNotifier.value = _resumePosition;
+        _resumePosition = Duration.zero;
+      }
       _setState(() => _loading = false);
+      _updateRecoveryTimers();
     } catch (error) {
       if (!mounted || generation != _generation) {
         if (!attached && ownedPlayer != null) await _disposePlayer(ownedPlayer);
@@ -890,13 +1042,39 @@ class _ShortVideoItemState extends State<ShortVideoItem>
         (value) {
           if (!mounted || !identical(player, _player)) return;
           if (value != _buffering) _setState(() => _buffering = value);
+          _updateRecoveryTimers();
           _trackWatch();
         },
       ),
       player.stream.position.listen(
         (value) {
           if (!mounted || !identical(player, _player)) return;
+          final delta = value - _positionNotifier.value;
           _positionNotifier.value = value;
+          // Native error/buffering events can describe a recovered CDN request.
+          // Actual forward playback wins; seeks do not reset the retry budget.
+          if (_canPlay &&
+              !_loading &&
+              !_qualityBusy &&
+              delta > Duration.zero &&
+              delta <= const Duration(seconds: 2)) {
+            _healthyProgress += delta;
+            if (_buffering) _setState(() => _buffering = false);
+            _pendingPlaybackError = null;
+            _cancelRecoveryTimers();
+            if (_error != null) {
+              _setState(() => _error = null);
+              _watch.failed = false;
+              _reportedError = false;
+              _trackWatch();
+              widget.onPlaybackReady?.call();
+            }
+            if (_healthyProgress >= const Duration(seconds: 5)) {
+              _retryAttempts = 0;
+            }
+            // Re-arm from the last progress, not from a stale buffering flag.
+            _updateRecoveryTimers();
+          }
         },
       ),
       player.stream.duration.listen(
@@ -909,10 +1087,11 @@ class _ShortVideoItemState extends State<ShortVideoItem>
         if (!mounted || !identical(player, _player)) return;
         _trackWatch();
         if (!completed) _completionHandled = false;
-        if (completed && _canPlay && !_completionHandled) {
+        if (completed && _canPlay && !_scrubbing && !_completionHandled) {
           _completionHandled = true;
           // Seeking to the end isn't a completion signal for recommendations.
-          if (!_commentsOpen &&
+          if (!_qualityBusy &&
+              !_commentsOpen &&
               !_speedMenuOpen &&
               _panel == _ShortVideoPanel.none &&
               _duration > Duration.zero &&
@@ -921,6 +1100,7 @@ class _ShortVideoItemState extends State<ShortVideoItem>
             _settleWatch(completed: true);
           }
           if (widget.preferences.autoNext &&
+              !_qualityBusy &&
               !_speedMenuOpen &&
               !_commentsOpen &&
               _panel == _ShortVideoPanel.none) {
@@ -938,15 +1118,18 @@ class _ShortVideoItemState extends State<ShortVideoItem>
       }),
       player.stream.error.listen((error) {
         if (!mounted || !identical(player, _player)) return;
-        if (error.isNotEmpty) {
-          _setState(() => _error = error);
-          _reportError();
+        if (error.isNotEmpty && !_qualityBusy) {
+          _pendingPlaybackError = error;
+          _updateRecoveryTimers();
         }
       }),
     ]);
   }
 
   Future<void> _releasePlayer() async {
+    _cancelRecoveryTimers();
+    _pendingPlaybackError = null;
+    _healthyProgress = Duration.zero;
     _generation++;
     _prepareFuture = null;
     _disposeSubscriptions();
@@ -972,13 +1155,37 @@ class _ShortVideoItemState extends State<ShortVideoItem>
     }
   }
 
-  Future<void> _retry() async {
+  Future<void> _retry({bool automatic = false}) async {
+    if (_retrying ||
+        !mounted ||
+        !widget.active ||
+        !_foreground ||
+        _routeCovered) {
+      return;
+    }
+    _retrying = true;
+    _cancelRecoveryTimers();
+    if (automatic) {
+      _retryAttempts++;
+    } else {
+      _retryAttempts = 0;
+    }
+    final position = _positionNotifier.value;
+    if (position > Duration.zero) _resumePosition = position;
+    _resumeQuality = _selectedQuality ?? _resumeQuality;
     _watch = ShortVideoWatchSession();
     _reportedError = false;
     _exposed = false;
     widget.controller.invalidateSource(widget.item);
-    await _releasePlayer();
-    if (mounted && widget.active) await _syncPlayback();
+    try {
+      await _releasePlayer();
+      if (mounted && widget.active && _foreground && !_routeCovered) {
+        await _syncPlayback();
+      }
+    } finally {
+      _retrying = false;
+      if (mounted) _updateRecoveryTimers();
+    }
   }
 
   void _disposeSubscriptions() {
@@ -1006,6 +1213,17 @@ class _ShortVideoItemState extends State<ShortVideoItem>
   void _toggleCleanScreen() {
     if (widget.preferences.haptics) HapticFeedback.selectionClick();
     _setState(() => _cleanScreen = !_cleanScreen);
+  }
+
+  Future<void> _exitCleanScreen() async {
+    if (!_cleanScreen && !_commentsOpen) return;
+    _setState(() => _cleanScreen = false);
+    // Exiting the persistent mode must also apply to the next video/re-entry.
+    try {
+      await GStorage.setting.put(SettingBoxKey.shortVideoCleanScreen, false);
+    } catch (_) {
+      SmartDialog.showToast('已退出清屏，但默认设置保存失败');
+    }
   }
 
   Future<void> _startFastPlayback() async {
@@ -1251,9 +1469,99 @@ class _ShortVideoItemState extends State<ShortVideoItem>
     }
   }
 
-  Future<void> _openDetail() async {
+  Future<void> _openFullscreen() => _openDetail(fullscreen: true);
+
+  Future<void> _toggleSubtitles() async {
+    _setState(() => _subtitlesEnabled = !_subtitlesEnabled);
+    try {
+      await GStorage.setting.put(
+        SettingBoxKey.shortVideoSubtitles,
+        _subtitlesEnabled,
+      );
+    } catch (_) {
+      SmartDialog.showToast('字幕设置保存失败');
+    }
+  }
+
+  Future<void> _toggleDanmaku() async {
+    _setState(() => _danmakuEnabled = !_danmakuEnabled);
+    try {
+      await GStorage.setting.put(
+        SettingBoxKey.shortVideoDanmaku,
+        _danmakuEnabled,
+      );
+    } catch (_) {
+      SmartDialog.showToast('弹幕设置保存失败');
+    }
+  }
+
+  Future<void> _openQualityMenu() async {
     final source = _source;
-    if (source == null) return;
+    final player = _player;
+    if (source == null || player == null || _qualityBusy) return;
+    _setState(() => _qualityBusy = true);
+    widget.onPanelChanged?.call(true);
+    try {
+      await _syncPlayback();
+      if (!mounted) return;
+      final selected = await showModalBottomSheet<int>(
+        context: context,
+        builder: (context) => SafeArea(
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const ListTile(title: Text('清晰度（当前可用）')),
+                for (final quality
+                    in (source.qualityUrls.keys.toList()
+                      ..sort((a, b) => b.compareTo(a))))
+                  ListTile(
+                    title: Text(_qualityLabel(quality)),
+                    trailing: quality == (_selectedQuality ?? source.quality)
+                        ? const Icon(Icons.check)
+                        : null,
+                    onTap: () => Navigator.pop(context, quality),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      );
+      if (!mounted ||
+          player != _player ||
+          selected == null ||
+          selected == (_selectedQuality ?? source.quality)) {
+        return;
+      }
+      final position = _positionNotifier.value;
+      final previousUrl =
+          source.qualityUrls[_selectedQuality ?? source.quality] ?? source.url;
+      try {
+        await player.open(Media(source.qualityUrls[selected]!), play: false);
+        if (!mounted || player != _player) return;
+        await player.seek(position);
+        _setState(() => _selectedQuality = selected);
+      } catch (_) {
+        if (!mounted || player != _player) return;
+        await player.open(Media(previousUrl), play: false);
+        await player.seek(position);
+        rethrow;
+      }
+    } catch (_) {
+      if (mounted) SmartDialog.showToast('清晰度切换失败，请重试');
+    } finally {
+      if (mounted) {
+        _setState(() => _qualityBusy = false);
+        widget.onPanelChanged?.call(false);
+        await _syncPlayback();
+      }
+    }
+  }
+
+  Future<void> _openDetail({bool fullscreen = false}) async {
+    final source = _source;
+    if (source == null || _routeCovered) return;
+    if (!mounted) return;
     await _openRoute(
       () => PageUtils.toVideoPage(
         aid: widget.item.aid,
@@ -1262,6 +1570,17 @@ class _ShortVideoItemState extends State<ShortVideoItem>
         cover: widget.item.cover,
         title: widget.item.title,
         isVertical: source.isVertical,
+        progress: _positionNotifier.value.inMilliseconds,
+        extraArguments: {
+          'shortVideoFullscreen': fullscreen,
+          'shortVideoAutoplay': !_userPaused,
+          'shortVideoOnReturn': (int cid, Duration position, bool inPip) {
+            if (!mounted || cid != source.cid) return;
+            if (inPip) _userPaused = true;
+            _resumePosition = position;
+            if (!_routeCovered) unawaited(_restoreRoutePosition());
+          },
+        },
       ),
     );
   }
@@ -1272,6 +1591,19 @@ class _ShortVideoItemState extends State<ShortVideoItem>
     await _openRoute(() => Get.toNamed('/member?mid=$mid'));
   }
 
+  Future<void> _restoreRoutePosition() async {
+    final player = _player;
+    final position = _resumePosition;
+    if (!mounted || player == null) return;
+    _resumePosition = Duration.zero;
+    try {
+      await player.seek(position);
+      if (mounted && identical(player, _player)) await _syncPlayback();
+    } catch (error, stack) {
+      logger.w('restore short-video progress', error: error, stackTrace: stack);
+    }
+  }
+
   Future<void> _openRoute(Future<dynamic>? Function() open) async {
     _routeCovered = true;
     await _syncPlayback();
@@ -1279,7 +1611,18 @@ class _ShortVideoItemState extends State<ShortVideoItem>
       await open();
     } finally {
       _routeCovered = false;
-      if (mounted) await _syncPlayback();
+      if (mounted) {
+        if (PlatformUtils.isMobile) {
+          await portraitUpMode();
+          await applyShortVideoSystemBars(widget.preferences.showStatusBar);
+        }
+        final player = _player;
+        if (player != null && _resumePosition > Duration.zero) {
+          await player.seek(_resumePosition);
+          _resumePosition = Duration.zero;
+        }
+        await _syncPlayback();
+      }
     }
   }
 
@@ -1338,7 +1681,19 @@ class _ShortVideoItemState extends State<ShortVideoItem>
   Future<void> _openComments() async {
     if (_commentsOpen || !mounted) return;
     if (widget.preferences.haptics) HapticFeedback.selectionClick();
-    _commentsOpen = true;
+    final screen = MediaQuery.sizeOf(context);
+    final ratio =
+        widget.preferences.aspect.ratio ??
+        _source?.displayAspectRatio ??
+        16 / 9;
+    final layout = ShortVideoCommentLayout.calculate(
+      screen: screen,
+      aspectRatio: ratio,
+    );
+    _commentExtent.value = screen.height > 0
+        ? 1 - layout.videoHeight / screen.height
+        : .5;
+    _setState(() => _commentsOpen = true);
     _trackWatch();
     _settleWatch();
     widget.onPanelChanged?.call(true);
@@ -1348,6 +1703,11 @@ class _ShortVideoItemState extends State<ShortVideoItem>
         context: context,
         aid: aid,
         commentCount: _replyCount,
+        videoAspectRatio: ratio,
+        transitionAnimationController: _commentAnimation,
+        onSheetExtentChanged: (extent) {
+          if (mounted && _commentsOpen) _commentExtent.value = extent;
+        },
         loadReplies: widget.loadReplies,
         onCountChanged: (count) {
           if (mounted && count != _replyCount) {
@@ -1363,8 +1723,16 @@ class _ShortVideoItemState extends State<ShortVideoItem>
       );
       SmartDialog.showToast('评论面板打开失败，请重试');
     } finally {
-      _commentsOpen = false;
+      // Keep the compact media viewport until the modal's exit animation ends.
+      if (mounted && _commentAnimation.value > 0) {
+        try {
+          await _commentAnimation.reverse().orCancel;
+        } on TickerCanceled {
+          // Disposed while the sheet was exiting.
+        }
+      }
       if (mounted) {
+        _setState(() => _commentsOpen = false);
         _trackWatch();
         widget.onPanelChanged?.call(false);
       }
@@ -1388,53 +1756,226 @@ class _ShortVideoItemState extends State<ShortVideoItem>
     final bottomPadding = MediaQuery.paddingOf(context).bottom;
     final topPadding = MediaQuery.paddingOf(context).top;
     final compact = MediaQuery.sizeOf(context).height < 720;
-    final fit = _source?.isVertical == true && widget.preferences.fill
-        ? BoxFit.cover
-        : BoxFit.contain;
+    // Legacy fill is ignored; cropping/stretching now requires explicit choice.
+    final fit = widget.preferences.fit.fit;
+    final aspectRatio = widget.preferences.aspect.ratio;
 
     return PopScope(
-      canPop: _panel == _ShortVideoPanel.none,
+      canPop:
+          !widget.current || (_panel == _ShortVideoPanel.none && !_cleanScreen),
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop && _panel != _ShortVideoPanel.none) _closePanel();
+        if (!didPop && widget.current) {
+          if (_panel != _ShortVideoPanel.none) {
+            _closePanel();
+          } else if (_cleanScreen) {
+            unawaited(_exitCleanScreen());
+          }
+        }
       },
       child: Stack(
         fit: StackFit.expand,
         children: [
           const ColoredBox(color: Colors.black),
-          if (_videoController != null)
-            RepaintBoundary(
-              child: Video(
-                controller: _videoController!,
-                fit: fit,
-                fill: Colors.black,
-                controls: (_) => const SizedBox.shrink(),
-                // A single lifecycle owner preserves user pause and position.
-                pauseUponEnteringBackgroundMode: false,
-                resumeUponEnteringForegroundMode: false,
+          Positioned.fill(
+            child: AnimatedBuilder(
+              animation: Listenable.merge([_commentAnimation, _commentExtent]),
+              builder: (context, child) => TweenAnimationBuilder<double>(
+                tween: Tween(begin: .5, end: _commentExtent.value),
+                duration: const Duration(milliseconds: 180),
+                child: child,
+                builder: (context, extent, child) => LayoutBuilder(
+                  builder: (context, constraints) {
+                    final progress = Curves.easeOutCubic.transform(
+                      _commentAnimation.value,
+                    );
+                    final height =
+                        constraints.maxHeight * (1 - extent * progress);
+                    return Align(
+                      alignment: Alignment.topCenter,
+                      child: SizedBox(
+                        key: const ValueKey('short-video-media-viewport'),
+                        height: height,
+                        width: constraints.maxWidth,
+                        child: ClipRect(child: child),
+                      ),
+                    );
+                  },
+                ),
               ),
-            ),
-          IgnorePointer(
-            child: AnimatedOpacity(
-              opacity: _firstFrameReady ? 0 : 1,
-              duration: MediaQuery.disableAnimationsOf(context)
-                  ? Duration.zero
-                  : const Duration(milliseconds: 160),
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  NetworkImgLayer(
-                    src: widget.item.cover,
-                    width: MediaQuery.sizeOf(context).width,
-                    height: MediaQuery.sizeOf(context).height,
-                    borderRadius: BorderRadius.zero,
-                    fit: BoxFit.cover,
+                  const ColoredBox(color: Colors.black),
+                  if (_videoController != null)
+                    RepaintBoundary(
+                      child: Video(
+                        controller: _videoController!,
+                        aspectRatio: aspectRatio,
+                        fit: fit,
+                        fill: Colors.black,
+                        controls: (_) => const SizedBox.shrink(),
+                        // A single lifecycle owner preserves user pause and position.
+                        pauseUponEnteringBackgroundMode: false,
+                        resumeUponEnteringForegroundMode: false,
+                      ),
+                    ),
+                  if (_danmakuEnabled && widget.current && _source != null)
+                    Positioned.fill(
+                      top: _commentsOpen ? 8 : topPadding + 65,
+                      bottom: _commentsOpen ? 40 : bottomPadding + 110,
+                      child: ShortVideoDanmaku(
+                        key: ValueKey(_source!.cid),
+                        cid: _source!.cid,
+                        fontSize: widget.preferences.danmakuFont,
+                        opacity: widget.preferences.danmakuOpacity,
+                        area: widget.preferences.danmakuArea,
+                        position: _positionNotifier,
+                        playing:
+                            _canPlay &&
+                            _playing &&
+                            !_buffering &&
+                            !_qualityBusy,
+                        rate: _speeding ? _longPressRate : _baseRate,
+                      ),
+                    ),
+                  IgnorePointer(
+                    child: AnimatedOpacity(
+                      opacity: _firstFrameReady ? 0 : 1,
+                      duration: MediaQuery.disableAnimationsOf(context)
+                          ? Duration.zero
+                          : const Duration(milliseconds: 160),
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          if (aspectRatio == null)
+                            NetworkImgLayer(
+                              src: widget.item.cover,
+                              width: MediaQuery.sizeOf(context).width,
+                              height: MediaQuery.sizeOf(context).height,
+                              borderRadius: BorderRadius.zero,
+                              getPlaceHolder: () =>
+                                  const ColoredBox(color: Color(0xFF111318)),
+                              fit: fit,
+                            )
+                          else
+                            FittedBox(
+                              fit: fit,
+                              child: SizedBox(
+                                width: 1000 * aspectRatio,
+                                height: 1000,
+                                child: NetworkImgLayer(
+                                  src: widget.item.cover,
+                                  width: 1000 * aspectRatio,
+                                  height: 1000,
+                                  borderRadius: BorderRadius.zero,
+                                  getPlaceHolder: () => const ColoredBox(
+                                    color: Color(0xFF111318),
+                                  ),
+                                  fit: BoxFit.fill,
+                                ),
+                              ),
+                            ),
+                          const ColoredBox(color: Color(0x52000000)),
+                        ],
+                      ),
+                    ),
                   ),
-                  const ColoredBox(color: Color(0x52000000)),
+                  IgnorePointer(
+                    child: Center(
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 180),
+                        transitionBuilder: (child, animation) =>
+                            ScaleTransition(
+                              scale: CurvedAnimation(
+                                parent: animation,
+                                curve: Curves.easeOutBack,
+                              ),
+                              child: FadeTransition(
+                                opacity: animation,
+                                child: child,
+                              ),
+                            ),
+                        child:
+                            widget.active &&
+                                _userPaused &&
+                                !_playing &&
+                                !_loading &&
+                                _error == null
+                            ? Container(
+                                key: const ValueKey('paused'),
+                                width: 66,
+                                height: 66,
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: Colors.black.withValues(alpha: 0.4),
+                                  border: Border.all(color: Colors.white24),
+                                ),
+                                child: const Icon(
+                                  Icons.play_arrow_rounded,
+                                  color: Colors.white,
+                                  size: 44,
+                                ),
+                              )
+                            : const SizedBox(key: ValueKey('playing')),
+                      ),
+                    ),
+                  ),
+                  if (widget.active &&
+                      _error == null &&
+                      (_loading ||
+                          _buffering ||
+                          (_videoController != null &&
+                              !_firstFrameReady &&
+                              !_userPaused)))
+                    IgnorePointer(
+                      child: Center(
+                        child: Container(
+                          width: 48,
+                          height: 48,
+                          padding: const EdgeInsets.all(13),
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: Colors.black.withValues(alpha: 0.48),
+                            border: Border.all(color: Colors.white12),
+                          ),
+                          child: const CircularProgressIndicator(
+                            color: Colors.white,
+                            strokeWidth: 2.4,
+                          ),
+                        ),
+                      ),
+                    ),
+                  if (_subtitlesEnabled && widget.current && _source != null)
+                    Positioned.fill(
+                      left: 20,
+                      right: _cleanScreen || _commentsOpen ? 20 : 82,
+                      top: _commentsOpen ? 8 : topPadding + 72,
+                      bottom: _commentsOpen
+                          ? 12
+                          : bottomPadding + (_cleanScreen ? 32 : 225),
+                      child: Align(
+                        alignment:
+                            widget.preferences.subtitles.position.alignment,
+                        child: ShortVideoSubtitles(
+                          key: ValueKey('subtitles-${_source!.cid}'),
+                          preferences: widget.preferences.subtitles,
+                          translationActive:
+                              _canPlay &&
+                              _playing &&
+                              !_buffering &&
+                              !widget.scrolling,
+                          aid: widget.item.aid!,
+                          bvid: _bvid,
+                          cid: _source!.cid,
+                          position: _positionNotifier,
+                        ),
+                      ),
+                    ),
                 ],
               ),
             ),
           ),
-          if (!_cleanScreen)
+          if (!_cleanScreen && !_commentsOpen)
             const DecoratedBox(
               decoration: BoxDecoration(
                 gradient: LinearGradient(
@@ -1460,7 +2001,22 @@ class _ShortVideoItemState extends State<ShortVideoItem>
               onLongPressCancel: _stopFastPlayback,
             ),
           ),
-          if (!_cleanScreen)
+          if (_cleanScreen && !_commentsOpen && widget.current)
+            Positioned(
+              top: topPadding + 8,
+              right: 12,
+              child: FilledButton.tonalIcon(
+                key: const ValueKey('exit-short-video-clean-screen'),
+                onPressed: _exitCleanScreen,
+                style: FilledButton.styleFrom(
+                  backgroundColor: Colors.black54,
+                  foregroundColor: Colors.white,
+                ),
+                icon: const Icon(Icons.fullscreen_exit_rounded, size: 20),
+                label: const Text('退出清屏'),
+              ),
+            ),
+          if (!_cleanScreen && !_commentsOpen)
             Positioned(
               top: topPadding + 4,
               left: 8,
@@ -1479,61 +2035,6 @@ class _ShortVideoItemState extends State<ShortVideoItem>
                     ),
                 onSearch: () => _openRoute(() => Get.toNamed('/search')),
                 onMore: _openFeedMenu,
-              ),
-            ),
-          IgnorePointer(
-            child: Center(
-              child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 180),
-                transitionBuilder: (child, animation) => ScaleTransition(
-                  scale: CurvedAnimation(
-                    parent: animation,
-                    curve: Curves.easeOutBack,
-                  ),
-                  child: FadeTransition(opacity: animation, child: child),
-                ),
-                child:
-                    widget.active &&
-                        _userPaused &&
-                        !_playing &&
-                        !_loading &&
-                        _error == null
-                    ? Container(
-                        key: const ValueKey('paused'),
-                        width: 66,
-                        height: 66,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: Colors.black.withValues(alpha: 0.4),
-                          border: Border.all(color: Colors.white24),
-                        ),
-                        child: const Icon(
-                          Icons.play_arrow_rounded,
-                          color: Colors.white,
-                          size: 44,
-                        ),
-                      )
-                    : const SizedBox(key: ValueKey('playing')),
-              ),
-            ),
-          ),
-          if (widget.active && (_loading || _buffering))
-            IgnorePointer(
-              child: Center(
-                child: Container(
-                  width: 48,
-                  height: 48,
-                  padding: const EdgeInsets.all(13),
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: Colors.black.withValues(alpha: 0.48),
-                    border: Border.all(color: Colors.white12),
-                  ),
-                  child: const CircularProgressIndicator(
-                    color: Colors.white,
-                    strokeWidth: 2.4,
-                  ),
-                ),
               ),
             ),
           if (_speeding)
@@ -1590,7 +2091,7 @@ class _ShortVideoItemState extends State<ShortVideoItem>
                 ),
               ),
             ),
-          if (!_cleanScreen)
+          if (!_cleanScreen && !_commentsOpen)
             Positioned(
               left: 16,
               right: 82,
@@ -1605,7 +2106,7 @@ class _ShortVideoItemState extends State<ShortVideoItem>
                 onFollow: _toggleFollow,
               ),
             ),
-          if (!_cleanScreen)
+          if (!_cleanScreen && !_commentsOpen)
             Positioned(
               right: 7,
               bottom: bottomPadding + (compact ? 84 : 94),
@@ -1669,26 +2170,40 @@ class _ShortVideoItemState extends State<ShortVideoItem>
                 ],
               ),
             ),
-          if (!_cleanScreen)
+          if (!_cleanScreen && !_commentsOpen)
             Positioned(
               left: 0,
               right: 0,
               bottom: bottomPadding + 53,
-              child: _VideoProgressBar(
+              child: ShortVideoProgressBar(
+                key: ValueKey(_source?.cid),
+                onDraggingChanged: (dragging) {
+                  _scrubbing = dragging;
+                  widget.onPanelChanged?.call(dragging);
+                  _trackWatch();
+                },
                 positionListenable: _positionNotifier,
                 duration: _duration,
                 onSeek: _seekTo,
                 haptics: widget.preferences.haptics,
               ),
             ),
-          if (!_cleanScreen)
+          if (!_cleanScreen && !_commentsOpen)
             Positioned(
               left: 12,
               right: 12,
               bottom: bottomPadding + 8,
-              child: _BottomInputBar(
+              child: _BottomPlaybackBar(
                 muted: widget.muted,
-                onInput: _openComments,
+                subtitlesEnabled: _subtitlesEnabled,
+                onSubtitles: _toggleSubtitles,
+                danmakuEnabled: _danmakuEnabled,
+                onDanmaku: _toggleDanmaku,
+                quality: _qualityLabel(
+                  _selectedQuality ?? _source?.quality ?? 64,
+                ),
+                onQuality: _qualityBusy ? null : _openQualityMenu,
+                onFullscreen: _openFullscreen,
                 onToggleMuted: widget.onToggleMuted,
                 onOpenDetail: _openDetail,
                 speed: _baseRate,
@@ -1716,6 +2231,18 @@ class _ShortVideoItemState extends State<ShortVideoItem>
   }
 }
 
+class _PortraitBackButton extends StatelessWidget {
+  const _PortraitBackButton({required this.onPressed});
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) => _TopIconButton(
+    icon: Icons.arrow_back_ios_new_rounded,
+    tooltip: '返回',
+    onPressed: onPressed,
+  );
+}
+
 class _PortraitTopBar extends StatelessWidget {
   const _PortraitTopBar({
     required this.viewCount,
@@ -1735,24 +2262,7 @@ class _PortraitTopBar extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(
       children: [
-        DecoratedBox(
-          decoration: BoxDecoration(
-            color: Colors.black.withValues(alpha: 0.26),
-            borderRadius: BorderRadius.circular(24),
-            border: Border.all(color: Colors.white12),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _TopIconButton(
-                icon: Icons.arrow_back_ios_new_rounded,
-                tooltip: '返回',
-                onPressed: onBack,
-                transparent: true,
-              ),
-            ],
-          ),
-        ),
+        _PortraitBackButton(onPressed: onBack),
         const SizedBox(width: 9),
         Expanded(
           child: Container(
@@ -1832,13 +2342,11 @@ class _TopIconButton extends StatelessWidget {
     required this.icon,
     required this.tooltip,
     required this.onPressed,
-    this.transparent = false,
   });
 
   final IconData icon;
   final String tooltip;
   final VoidCallback onPressed;
-  final bool transparent;
 
   @override
   Widget build(BuildContext context) {
@@ -1850,10 +2358,8 @@ class _TopIconButton extends StatelessWidget {
       iconSize: 25,
       style: IconButton.styleFrom(
         minimumSize: const Size.square(40),
-        backgroundColor: transparent
-            ? Colors.transparent
-            : Colors.black.withValues(alpha: 0.26),
-        side: transparent ? null : const BorderSide(color: Colors.white12),
+        backgroundColor: Colors.black.withValues(alpha: 0.26),
+        side: const BorderSide(color: Colors.white12),
         shadowColor: Colors.black54,
       ),
       icon: Icon(icon, shadows: const [Shadow(blurRadius: 8)]),
@@ -2271,170 +2777,103 @@ class _CoinPickerSheetState extends State<_CoinPickerSheet> {
   }
 }
 
-class _VideoProgressBar extends StatelessWidget {
-  const _VideoProgressBar({
-    required this.positionListenable,
-    required this.duration,
-    required this.onSeek,
-    required this.haptics,
-  });
+String _qualityLabel(int code) =>
+    VideoQuality.values
+        .where((quality) => quality.code == code)
+        .firstOrNull
+        ?.shortDesc ??
+    '$code';
 
-  final ValueListenable<Duration> positionListenable;
-  final Duration duration;
-  final ValueChanged<double> onSeek;
-  final bool haptics;
-
-  @override
-  Widget build(BuildContext context) {
-    return ValueListenableBuilder<Duration>(
-      valueListenable: positionListenable,
-      builder: (context, position, _) {
-        final progress = duration.inMilliseconds <= 0
-            ? 0.0
-            : (position.inMilliseconds / duration.inMilliseconds).clamp(
-                0.0,
-                1.0,
-              );
-        return Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: Row(
-            children: [
-              Text(
-                _formatDuration(position),
-                style: const TextStyle(color: Colors.white70, fontSize: 10),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: LayoutBuilder(
-                  builder: (context, constraints) => GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTapDown: (details) {
-                      if (haptics) HapticFeedback.selectionClick();
-                      onSeek(details.localPosition.dx / constraints.maxWidth);
-                    },
-                    onHorizontalDragUpdate: (details) {
-                      onSeek(details.localPosition.dx / constraints.maxWidth);
-                    },
-                    child: SizedBox(
-                      height: 22,
-                      child: Center(
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(3),
-                          child: LinearProgressIndicator(
-                            value: progress,
-                            minHeight: 3,
-                            color: const Color(0xFFFF6699),
-                            backgroundColor: Colors.white30,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Text(
-                _formatDuration(duration),
-                style: const TextStyle(color: Colors.white70, fontSize: 10),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-}
-
-class _BottomInputBar extends StatelessWidget {
-  const _BottomInputBar({
+class _BottomPlaybackBar extends StatelessWidget {
+  const _BottomPlaybackBar({
     required this.muted,
-    required this.onInput,
     required this.onToggleMuted,
     required this.onOpenDetail,
     required this.speed,
     required this.onSpeed,
+    required this.subtitlesEnabled,
+    required this.onSubtitles,
+    required this.danmakuEnabled,
+    required this.onDanmaku,
+    required this.quality,
+    required this.onQuality,
+    required this.onFullscreen,
   });
-
-  final bool muted;
-  final VoidCallback onInput;
-  final VoidCallback onToggleMuted;
-  final VoidCallback onOpenDetail;
+  final bool muted, danmakuEnabled, subtitlesEnabled;
+  final VoidCallback onSubtitles;
+  final VoidCallback onToggleMuted, onOpenDetail, onDanmaku, onFullscreen;
+  final VoidCallback? onQuality;
   final double speed;
+  final String quality;
   final ValueChanged<BuildContext> onSpeed;
-
   @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Expanded(
-          child: Material(
-            color: Colors.black.withValues(alpha: 0.34),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(22),
-              side: const BorderSide(color: Colors.white12),
-            ),
-            clipBehavior: Clip.antiAlias,
-            child: InkWell(
-              onTap: onInput,
-              child: const SizedBox(
-                height: 40,
-                child: Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 15),
-                  child: Row(
-                    children: [
-                      Icon(
-                        Icons.edit_note_rounded,
-                        color: Colors.white70,
-                        size: 19,
-                      ),
-                      SizedBox(width: 7),
-                      Flexible(
-                        child: Text(
-                          '留下你的精彩评论…',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(color: Colors.white70, fontSize: 14),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
+  Widget build(BuildContext context) => Row(
+    children: <Widget>[
+      IconButton(
+        tooltip: danmakuEnabled ? '关闭弹幕' : '打开弹幕',
+        onPressed: onDanmaku,
+        color: danmakuEnabled ? Colors.lightBlueAccent : Colors.white54,
+        icon: const Icon(Icons.subtitles_outlined),
+      ),
+      IconButton(
+        tooltip: subtitlesEnabled ? '关闭字幕' : '打开字幕',
+        onPressed: onSubtitles,
+        color: subtitlesEnabled ? Colors.lightBlueAccent : Colors.white54,
+        icon: const Icon(Icons.closed_caption_outlined),
+      ),
+      TextButton(
+        onPressed: onQuality,
+        style: TextButton.styleFrom(
+          minimumSize: Size.zero,
+          padding: const EdgeInsets.symmetric(horizontal: 2),
         ),
-        const SizedBox(width: 4),
-        Tooltip(
-          message: '倍速',
-          child: Builder(
-            builder: (buttonContext) => TextButton(
-              onPressed: () => onSpeed(buttonContext),
-              style: TextButton.styleFrom(
-                foregroundColor: Colors.white,
-                minimumSize: const Size(44, 40),
-                padding: const EdgeInsets.symmetric(horizontal: 6),
-              ),
-              child: Text('${speed}X'),
+        child: Text(
+          quality,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(color: Colors.white, fontSize: 12),
+        ),
+      ),
+      Tooltip(
+        message: '倍速',
+        child: Builder(
+          builder: (context) => TextButton(
+            onPressed: () => onSpeed(context),
+            style: TextButton.styleFrom(
+              minimumSize: Size.zero,
+              padding: const EdgeInsets.symmetric(horizontal: 2),
+            ),
+            child: Text(
+              '${speed}X',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: Colors.white, fontSize: 12),
             ),
           ),
         ),
-        IconButton(
-          tooltip: muted ? '打开声音' : '静音',
-          onPressed: onToggleMuted,
-          color: Colors.white,
-          icon: Icon(
-            muted ? Icons.volume_off_rounded : Icons.volume_up_rounded,
-          ),
+      ),
+      IconButton(
+        tooltip: muted ? '打开声音' : '静音',
+        onPressed: onToggleMuted,
+        color: Colors.white,
+        icon: Icon(
+          muted ? Icons.volume_off_rounded : Icons.volume_up_rounded,
         ),
-        IconButton(
-          tooltip: '完整详情',
-          onPressed: onOpenDetail,
-          color: Colors.white,
-          icon: const Icon(Icons.screen_rotation_rounded),
-        ),
-      ],
-    );
-  }
+      ),
+      IconButton(
+        tooltip: '完整详情',
+        onPressed: onOpenDetail,
+        color: Colors.white,
+        icon: const Icon(Icons.info_outline),
+      ),
+      IconButton(
+        tooltip: '全屏',
+        onPressed: onFullscreen,
+        color: Colors.white,
+        icon: const Icon(Icons.screen_rotation_rounded),
+      ),
+    ].map((child) => Expanded(child: child)).toList(),
+  );
 }
 
 class _FeedStatusChip extends StatelessWidget {
@@ -2475,31 +2914,6 @@ class _FeedStatusChip extends StatelessWidget {
   }
 }
 
-class _CircleButton extends StatelessWidget {
-  const _CircleButton({
-    required this.icon,
-    required this.tooltip,
-    required this.onPressed,
-  });
-
-  final IconData icon;
-  final String tooltip;
-  final VoidCallback onPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    return IconButton.filledTonal(
-      tooltip: tooltip,
-      onPressed: onPressed,
-      style: IconButton.styleFrom(
-        backgroundColor: Colors.black38,
-        foregroundColor: Colors.white,
-      ),
-      icon: Icon(icon),
-    );
-  }
-}
-
 class _CenteredStatus extends StatelessWidget {
   const _CenteredStatus({
     required this.icon,
@@ -2518,55 +2932,28 @@ class _CenteredStatus extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SafeArea(
-      child: Stack(
-        children: [
-          Positioned(
-            left: 8,
-            top: 4,
-            child: _CircleButton(
-              icon: Icons.arrow_back_rounded,
-              tooltip: '返回',
-              onPressed: Get.back,
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 54, color: Colors.white70),
+            const SizedBox(height: 16),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white70),
             ),
-          ),
-          Center(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(icon, size: 54, color: Colors.white70),
-                const SizedBox(height: 16),
-                Text(
-                  message,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: Colors.white70),
-                ),
-                if (loading) ...[
-                  const SizedBox(height: 18),
-                  const CircularProgressIndicator(color: Colors.white),
-                ],
-                if (actionText != null) ...[
-                  const SizedBox(height: 12),
-                  FilledButton(onPressed: onAction, child: Text(actionText!)),
-                ],
-              ],
-            ),
-          ),
-        ],
+            if (loading) ...[
+              const SizedBox(height: 18),
+              const CircularProgressIndicator(color: Colors.white),
+            ],
+            if (actionText != null) ...[
+              const SizedBox(height: 12),
+              FilledButton(onPressed: onAction, child: Text(actionText!)),
+            ],
+          ],
+        ),
       ),
     );
   }
-}
-
-String _formatDuration(Duration value) {
-  final totalSeconds = value.inSeconds.clamp(0, 359999);
-  final hours = totalSeconds ~/ 3600;
-  final minutes = (totalSeconds % 3600) ~/ 60;
-  final seconds = totalSeconds % 60;
-  if (hours > 0) {
-    return '${hours.toString().padLeft(2, '0')}:'
-        '${minutes.toString().padLeft(2, '0')}:'
-        '${seconds.toString().padLeft(2, '0')}';
-  }
-  return '${minutes.toString().padLeft(2, '0')}:'
-      '${seconds.toString().padLeft(2, '0')}';
 }

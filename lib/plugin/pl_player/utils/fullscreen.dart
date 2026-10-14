@@ -63,13 +63,24 @@ Future<void>? fullMode() {
 }
 
 bool _showSystemBar = true;
+bool _statusBarOnly = false;
 bool get showSystemBar_ => _showSystemBar;
-Future<void>? hideSystemBar() {
-  if (!_showSystemBar) {
+Future<void>? hideSystemBar({bool force = false}) {
+  if (!_showSystemBar && !_statusBarOnly && !force) {
     return null;
   }
   _showSystemBar = false;
+  _statusBarOnly = false;
   return SystemChrome.setEnabledSystemUIMode(.immersiveSticky);
+}
+
+Future<void> showStatusBarOnly() {
+  _showSystemBar = false;
+  _statusBarOnly = true;
+  return SystemChrome.setEnabledSystemUIMode(
+    .manual,
+    overlays: const [SystemUiOverlay.top],
+  );
 }
 
 //退出全屏显示
@@ -78,6 +89,7 @@ Future<void>? showSystemBar() {
     return null;
   }
   _showSystemBar = true;
+  _statusBarOnly = false;
   return SystemChrome.setEnabledSystemUIMode(
     Platform.isAndroid && DeviceUtils.sdkInt < 29 ? .manual : .edgeToEdge,
     overlays: SystemUiOverlay.values,

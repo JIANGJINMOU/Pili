@@ -32,7 +32,8 @@ android {
         minSdk = flutter.minSdkVersion
         targetSdk = 37
         versionCode = flutter.versionCode
-        versionName = flutter.versionName
+        // Keep pubspec SemVer valid while exposing the four-part Android version.
+        versionName = "${flutter.versionName}.${flutter.versionCode}"
 
         ndk {
             abiFilters += setOf("arm64-v8a")

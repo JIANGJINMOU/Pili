@@ -99,6 +99,7 @@ class VideoDetailController extends GetxController
     with GetTickerProviderStateMixin, BlockMixin {
   /// 路由传参
   late final Map args;
+  bool get shortVideoFullscreen => args['shortVideoFullscreen'] == true;
   late String bvid;
   late int aid;
   late final RxInt cid;
@@ -420,8 +421,7 @@ class VideoDetailController extends GetxController
       final fsQa = isWiFi ? Pref.defaultVideoQa : Pref.defaultVideoQaCellular;
       final curHighestVideoQa = data.dash!.video!.first.quality.code;
       int targetQa = curHighestVideoQa;
-      if (data.acceptQuality?.isNotEmpty == true &&
-          fsQa <= curHighestVideoQa) {
+      if (data.acceptQuality?.isNotEmpty == true && fsQa <= curHighestVideoQa) {
         targetQa = data.acceptQuality!.findClosestTarget(
           (e) => e <= fsQa,
           (a, b) => a > b ? a : b,
@@ -465,6 +465,8 @@ class VideoDetailController extends GetxController
   void onInit() {
     super.onInit();
     args = Get.arguments;
+    if (shortVideoFullscreen)
+      _autoPlay.value = args['shortVideoAutoplay'] != false;
     plPlayerController.onNeedsPlayerInit = () async {
       playedTime = plPlayerController.videoPlayerController?.state.position;
       await playerInit();
@@ -930,7 +932,9 @@ class VideoDetailController extends GetxController
   }
 
   Future<void>? _initPlayerIfNeeded(bool autoFullScreenFlag) {
-    if (_autoPlay.value ||
+    if (isClosed) return null;
+    if (shortVideoFullscreen ||
+        _autoPlay.value ||
         (plPlayerController.preInitPlayer && !plPlayerController.processing) &&
             (isFileSource
                 ? true
@@ -982,6 +986,7 @@ class VideoDetailController extends GetxController
       pgcType: isUgc ? null : pgcType,
       videoType: videoType,
       onInit: () {
+        if (isClosed) return;
         videoState.value = true;
         setSubtitle(vttSubtitlesIndex.value);
       },
@@ -996,7 +1001,9 @@ class VideoDetailController extends GetxController
     // 触发不必要的异步操作和 UI 更新
     if (isClosed) {
       if (kDebugMode) {
-        debugPrint('[VideoDetail] playerInit: controller is closed, skipping resource loading');
+        debugPrint(
+          '[VideoDetail] playerInit: controller is closed, skipping resource loading',
+        );
       }
       return;
     }
@@ -1084,17 +1091,17 @@ class VideoDetailController extends GetxController
     }
     isQuerying = true;
     try {
-    if (_lastQueryBvid != bvid || _lastQueryCid != cid.value) {
-      // 跨视频/分P时重置画质缓存，确保根据半屏/全屏设置重新选择默认画质。
-      // resetTempSettings 在 setDataSource 中执行（HTTP 请求之后），
-      // 此处提前重置使得 cacheVideoQa == null 分支能正确初始化。
-      if (PlatformUtils.isMobile) {
-        plPlayerController.cacheVideoQa = null;
+      if (_lastQueryBvid != bvid || _lastQueryCid != cid.value) {
+        // 跨视频/分P时重置画质缓存，确保根据半屏/全屏设置重新选择默认画质。
+        // resetTempSettings 在 setDataSource 中执行（HTTP 请求之后），
+        // 此处提前重置使得 cacheVideoQa == null 分支能正确初始化。
+        if (PlatformUtils.isMobile) {
+          plPlayerController.cacheVideoQa = null;
+        }
+        _lastQueryBvid = bvid;
+        _lastQueryCid = cid.value;
       }
-      _lastQueryBvid = bvid;
-      _lastQueryCid = cid.value;
-    }
-    await _queryVideoUrl(fromReset, autoFullScreenFlag, reinitializePlayer);
+      await _queryVideoUrl(fromReset, autoFullScreenFlag, reinitializePlayer);
     } finally {
       isQuerying = false;
     }
@@ -1115,7 +1122,9 @@ class VideoDetailController extends GetxController
       final halfScreenQa = Pref.defaultVideoQaHalfScreen;
       plPlayerController
         // 半屏与蜂窝是两个正交的画质上限，同时命中取较低者（docs/adr/0002）
-        ..cacheVideoQa = !plPlayerController.isFullScreen.value &&
+        ..cacheVideoQa =
+            !shortVideoFullscreen &&
+                !plPlayerController.isFullScreen.value &&
                 halfScreenQa != null
             ? min(halfScreenQa, fsQa)
             : fsQa
@@ -1127,6 +1136,7 @@ class VideoDetailController extends GetxController
 
     final result = await _getVideoUrl(VideoQuality.hdrVivid.code);
 
+    if (isClosed) return;
     if (result case Success(:final response)) {
       data = response;
       if (data.dash != null) await _supplementVideoQualities();
