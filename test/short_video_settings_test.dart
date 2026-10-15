@@ -406,9 +406,11 @@ void main() {
     GStorage.setting = await Hive.openBox('setting');
     GStorage.video = await Hive.openBox('video');
     GStorage.localCache = await Hive.openBox('localCache');
-    await GStorage.localCache.put(LocalCacheKey.buvid, 'settings-test');
   });
-  setUp(() => GStorage.setting.clear());
+  setUp(() async {
+    await GStorage.setting.clear();
+    await GStorage.setting.put(SettingBoxKey.buvid, 'settings-test');
+  });
   tearDown(Get.reset);
   tearDownAll(() async {
     await Hive.close();

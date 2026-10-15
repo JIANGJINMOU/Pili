@@ -6,7 +6,7 @@
 - `applicationId` / namespace：`com.example.pilinara`。
 - ABI：仅 `arm64-v8a`；不提供 32 位 ARM 或 x86 安装包。
 - 当前版本号以 `pubspec.yaml` 为准。修改包名不会自动迁移另一个包的数据。
-- 本地验证环境使用 Flutter **3.47.5** / Dart **3.13.4**；依赖中含定制的 material_ui、GetX 和 media-kit，不要随意替换为官方同名依赖。
+- 本地验证环境使用 Flutter **3.47.7** / Dart **3.13.5**；依赖中含定制的 material_ui、GetX 和 media-kit，不要随意替换为官方同名依赖。
 - Android 配置使用 compileSdk / targetSdk **37**、AGP **9.1.0**、Gradle Wrapper **9.5.0**，JDK 路径通过 `flutter doctor -v` 检查。Java/Kotlin 字节码目标为 17，NDK 版本跟随 Flutter 配置。
 
 ## 准备与验证
@@ -47,6 +47,20 @@ keyPassword=YOUR_KEY_PASSWORD
 flutter build apk --release --target-platform android-arm64
 ```
 
+交付包还需传入 `pili.name`、`pili.code`、`pili.hash`、`pili.time` 编译常量，否则应用内「关于」会显示 `SNAPSHOT`。例如在 PowerShell 中，保持 `pubspec.yaml` 的版本不变：
+
+```powershell
+@{
+  'pili.name' = '2.1.6.13'
+  'pili.code' = 13
+  'pili.hash' = (git rev-parse HEAD).Trim()
+  'pili.time' = [DateTimeOffset]::Now.ToUnixTimeSeconds()
+} | ConvertTo-Json -Compress | Set-Content -Encoding utf8 pili_release.json
+flutter build apk --release --target-platform android-arm64 --dart-define-from-file=pili_release.json
+```
+
+`pili_release.json` 是忽略的本地构建元数据，每次交付重新生成，不复用旧提交或旧版本的数据。
+
 输出：`build/app/outputs/flutter-apk/app-release.apk`。不要使用 `--debug` 或开发用 `dev` Gradle 属性，否则应用标识/构建类型可能不同。
 
 使用 Android SDK Build Tools 检查安装包（Windows 使用对应 `.exe` / `.bat`）：
@@ -66,6 +80,15 @@ apksigner verify --print-certs build/app/outputs/flutter-apk/app-release.apk
 - 本仓库只做本地构建/测试时，不代表 GitHub Releases 已发布新 APK。
 - 真机至少验证：快速/反向滑动、连续播放、评论与子评论滚动/返回、断网重试、通知栏与锁屏恢复、手动暂停、临时/固定倍速、清除推荐记录，以及关闭移动网络预加载。
 - 自动化测试使用假的网络响应和原生播放器，不能替代实际设备的网络、解码、耗电或帧耗时检查。
+
+## 2.1.6.13（13）上游同步
+
+- 合并 `Starfallan/PiliNara` 的 `main`，上游提交 `8d755f16b`（2026-10-15 同步），包含 2.1.6 的播放器、画中画、番剧与依赖更新。
+- `pubspec.yaml` 为 `2.1.6+13`；Android versionName 为 `2.1.6.13`，versionCode 为 `13`。保留 `com.example.pilinara` 和 ARM64-only Release 配置，便于同签名覆盖上一版。
+- 保留本分支的竖屏评论、当前视频入口、直接全屏、拖动进度、字幕/画面设置及推荐策略；合并播放器顶栏布局与共享控制器的页面归属保护。
+- SDK 必须匹配 Flutter 3.47.7；按 `lib/scripts/patch.ps1` 的 Android 列表应用 Flutter 与 `material_ui` 补丁。推荐使用独立 SDK，避免覆盖其他项目的修改。该脚本包含 SDK 重置、全局 Git 身份修改和缓存删除，已有环境不要直接无检查执行。
+- 合并后完整测试共 196 项通过；全项目静态分析无 error，仍有 3 条上游 warning 和 66 条 info。修复测试中的 buvid 存储迁移适配，并让稍后再看选集的异步错误正确进入异常处理。
+- 原有 2.1.5.12 的功能说明与真机验收清单继续适用；自动化测试不代替真实设备验收。
 
 ## 2.1.5.12（12）版本约定
 

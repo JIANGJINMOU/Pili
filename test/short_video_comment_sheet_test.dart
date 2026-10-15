@@ -203,7 +203,7 @@ void main() {
     GStorage.setting = await Hive.openBox('setting');
     GStorage.video = await Hive.openBox('video');
     // Avoid an unawaited first-run ID write inside the widget test's fake clock.
-    await GStorage.localCache.put(LocalCacheKey.buvid, 'short-comment-test');
+    await GStorage.setting.put(SettingBoxKey.buvid, 'short-comment-test');
   });
   tearDownAll(() async {
     await Hive.close();

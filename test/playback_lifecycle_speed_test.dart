@@ -211,7 +211,6 @@ void main() {
     GStorage.video = await Hive.openBox('video');
     GStorage.localCache = await Hive.openBox('localCache');
     await GStorage.localCache.putAll({
-      LocalCacheKey.buvid: 'test',
       LocalCacheKey.timeStamp: DateTime.now().millisecondsSinceEpoch,
       LocalCacheKey.mixinKey: 'test',
     });
@@ -237,6 +236,7 @@ void main() {
   });
   setUp(() async {
     await GStorage.setting.clear();
+    await GStorage.setting.put(SettingBoxKey.buvid, 'test');
     await GStorage.video.clear();
     await GStorage.setting.put(SettingBoxKey.shortVideoPreload, false);
     players.clear();
