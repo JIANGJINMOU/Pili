@@ -81,7 +81,7 @@ import 'package:PiliPlus/plugin/pl_player/models/auto_audio_only_state.dart';
 
 typedef PlayCallback = Future<void>? Function();
 typedef PlayerInitCallback = Future<void> Function();
-typedef PlayOwner = ({String tag, Type type});
+typedef PlayOwner = ({String tag, Type? type});
 
 class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
   Player? _videoPlayerController;
@@ -503,6 +503,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
   late double subtitleFontScale = Pref.subtitleFontScale;
   late double subtitleFontScaleFS = Pref.subtitleFontScaleFS;
   late int subtitlePaddingH = Pref.subtitlePaddingH;
+  int? tmpSubtitlePaddingB;
   late int subtitlePaddingB = Pref.subtitlePaddingB;
   late double subtitleBgOpacity = Pref.subtitleBgOpacity;
   final bool showVipDanmaku = Pref.showVipDanmaku; // loop unswitching
@@ -523,9 +524,11 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
   late final darkVideoPage = Pref.darkVideoPage;
   late final enableSlideVolumeBrightness = Pref.enableSlideVolumeBrightness;
   late final enableSlideFS = Pref.enableSlideFS;
+  late final enableScrollVolume = Pref.enableScrollVolume;
   late final enableDragSubtitle = Pref.enableDragSubtitle;
+  late final fastForBackwardInSeconds = Pref.fastForBackwardDuration;
   late final fastForBackwardDuration = Duration(
-    seconds: Pref.fastForBackwardDuration,
+    seconds: fastForBackwardInSeconds,
   );
 
   late final horizontalSeasonPanel = Pref.horizontalSeasonPanel;
@@ -572,7 +575,9 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
       (tempPlayerConf ? 0 : Pref.audioDelayMs).obs;
   Timer? _videoPictureSaveTimer;
 
-  late int? cacheVideoQa = PlatformUtils.isMobile ? null : Pref.defaultVideoQa;
+  late int? cacheVideoQa = PlatformUtils.isMobile || Platform.isLinux
+      ? null
+      : Pref.defaultVideoQa;
   late int cacheAudioQa = Pref.defaultAudioQa;
   bool enableHeart = true;
   late final String? hwdec = Pref.enableHA ? Pref.hardwareDecoding : null;
@@ -671,7 +676,9 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
   }
 
   void onUpdatePadding(EdgeInsets padding) {
+    tmpSubtitlePaddingB = null;
     subtitlePaddingB = padding.bottom.round().clamp(0, 200);
+    updateSubtitleStyle();
     putSubtitleSettings();
   }
 
@@ -749,6 +756,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
   void _onOrientationChanged(OrientationParams param) {
     _orientation = param.orientation;
     if (Platform.isIOS && !visible) return;
+    if (controlsLock.value) return;
     final orientation = param.orientation;
     final isFullScreen = this.isFullScreen.value;
     if (checkIsAutoRotate &&
@@ -761,7 +769,6 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     }
     switch (orientation) {
       case .portraitUp:
-        if (!_isVertical && controlsLock.value) return;
         if (!horizontalScreen && !_isVertical && isFullScreen) {
           if (!isManualFS) {
             triggerFullScreen(status: false, orientation: orientation);
@@ -771,7 +778,6 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
         }
       case .portraitDown:
         if (!horizontalScreen) return;
-        if (!_isVertical && controlsLock.value) return;
         portraitDownMode();
       case .landscapeLeft:
         if (controlsLock.value && (lockFsRotation || _isVertical)) return;
@@ -792,7 +798,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
 
   // 添加一个私有构造函数
   PlPlayerController._() {
-    if (PlatformUtils.isMobile) {
+    if (PlatformUtils.isMobile && !DeviceUtils.isChromeOS) {
       _orientationListener = NativeDeviceOrientationPlatform.instance
           .onOrientationChanged(
             checkIsAutoRotate: checkIsAutoRotate,
@@ -1026,10 +1032,11 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     VoidCallback? onInit,
     Volume? volume,
     bool autoFullScreenFlag = false,
+    int? rotate,
   }) async {
     try {
       _processing = true;
-      // 换视频/换P：解除倍速锁定并恢复锁定前速度。
+      // 换视频/换P：结束长按及倍速锁定，恢复长按前速度。
       // 必须先于临时配置重置执行，否则 lastPlaybackSpeed 会被先行覆盖
       await releaseSpeedLock();
       final nextVideoContextKey = PipOverlayService.buildVideoContextKey(
@@ -1092,7 +1099,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
         return;
       }
       // 配置Player 音轨、字幕等等
-      await _createVideoController(dataSource, seekTo, volume);
+      await _createVideoController(dataSource, seekTo, volume, rotate);
 
       if (_playerCount == 0) {
         if (kDebugMode) {
@@ -1244,6 +1251,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     DataSource dataSource,
     Duration? seekTo,
     Volume? volume,
+    int? rotate,
   ) async {
     isBuffering.value = false;
     _heartDuration = 0;
@@ -1275,6 +1283,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
         ...liveBuffer
       else
         ...buffer,
+      'video-rotate': ?rotate?.toString(),
     };
 
     String video = dataSource.videoSource;
@@ -1489,28 +1498,26 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
           EasyThrottle.throttle(
             'controllerStream.error.listen',
             const Duration(milliseconds: 10000),
-            () {
-              Timer(const Duration(milliseconds: 3000), () {
-                // if (kDebugMode) {
-                //   debugPrint("isBuffering.value: ${isBuffering.value}");
-                // }
-                // if (kDebugMode) {
-                //   debugPrint("_buffered.value: ${_buffered.value}");
-                // }
-                if (isBuffering.value && buffered.value == 0) {
-                  final customHost = VideoUtils.customCDNUrl;
-                  SmartDialog.showToast(
-                    customHost == null
-                        ? '视频链接打开失败，重试中'
-                        : '视频链接打开失败，重试中\n当前自定义CDN节点：$customHost，持续失败可尝试更换或清除',
-                    displayTime: customHost == null
-                        ? const Duration(milliseconds: 500)
-                        : const Duration(milliseconds: 3000),
-                  );
-                  refreshPlayer();
-                }
-              });
-            },
+            () => Timer(const Duration(milliseconds: 3000), () {
+              // if (kDebugMode) {
+              //   debugPrint("isBuffering.value: ${isBuffering.value}");
+              // }
+              // if (kDebugMode) {
+              //   debugPrint("_buffered.value: ${_buffered.value}");
+              // }
+              if (isBuffering.value && buffered.value == 0) {
+                final customHost = VideoUtils.customCDNUrl;
+                SmartDialog.showToast(
+                  customHost == null
+                      ? '视频链接打开失败，重试中'
+                      : '视频链接打开失败，重试中\n当前自定义CDN节点：$customHost，持续失败可尝试更换或清除',
+                  displayTime: customHost == null
+                      ? const Duration(milliseconds: 500)
+                      : const Duration(milliseconds: 3000),
+                );
+                refreshPlayer();
+              }
+            }),
           );
         } else if (event.startsWith('Could not open codec')) {
           SmartDialog.showToast('无法加载解码器, $event，可能会切换至软解');
@@ -1660,7 +1667,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
   void hideTaskControls() {
     _timer?.cancel();
     _timer = Timer(showControlDuration, () {
-      if (!isSeeking.value && !tripling) {
+      if (!isSeeking.value && !tripling && !showDesktopProgressFeedback.value) {
         controls = false;
       }
       _timer = null;
@@ -1972,11 +1979,12 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     await setPlaybackSpeed(speed);
   }
 
-  /// 解除倍速锁定；[restoreSpeed] 为 true 时恢复锁定前速度
+  /// 结束长按及倍速锁定；[restoreSpeed] 为 true 时恢复长按前速度
   Future<void> releaseSpeedLock({bool restoreSpeed = true}) async {
-    if (!speedLocked) {
+    if (!speedLocked && !longPressStatus.value) {
       return;
     }
+    longPressStatus.value = false;
     speedLocked = false;
     _speedLockArmed = false;
     _cancelSpeedLockHintTimer();
@@ -2034,6 +2042,20 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
 
   void onBackward(Duration duration) {
     onForwardBackward(videoPlayerController!.state.position - duration);
+  }
+
+  void multiBackwardStart([_]) {
+    isSeeking.value = true;
+    seekPosition.value = max(0, seekPosition.value - fastForBackwardInSeconds);
+  }
+
+  void multiBackwardEnd() {
+    if (isSeeking.value) {
+      isSeeking.value = false;
+      onForwardBackward(Duration(seconds: seekPosition.value));
+    } else {
+      onBackward(fastForBackwardDuration);
+    }
   }
 
   void onForwardBackward(Duration duration) {
@@ -2811,6 +2833,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     requireDesktopProgressHoverReenter = false;
     if (!isSeeking.value) {
       hideDesktopProgressPreview();
+      hideTaskControls();
     }
   }
 
