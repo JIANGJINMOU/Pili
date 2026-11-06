@@ -6,7 +6,7 @@
 - `applicationId` / namespace：`com.example.pilinara`。
 - ABI：仅 `arm64-v8a`；不提供 32 位 ARM 或 x86 安装包。
 - 当前版本号以 `pubspec.yaml` 为准。修改包名不会自动迁移另一个包的数据。
-- 本地验证环境使用 Flutter **3.47.7** / Dart **3.13.5**；依赖中含定制的 material_ui、GetX 和 media-kit，不要随意替换为官方同名依赖。
+- Flutter 版本固定为 **3.47.9**（见 `.fvmrc`），自带 Dart **3.13.7**；依赖中含定制的 material_ui、GetX 和 media-kit，不要随意替换为官方同名依赖。
 - Android 配置使用 compileSdk / targetSdk **37**、AGP **9.1.0**、Gradle Wrapper **9.5.0**，JDK 路径通过 `flutter doctor -v` 检查。Java/Kotlin 字节码目标为 17，NDK 版本跟随 Flutter 配置。
 
 ## 准备与验证
@@ -19,12 +19,12 @@ git clone https://github.com/JIANGJINMOU/Pili.git
 cd Pili
 flutter doctor -v
 flutter pub get
-flutter test test/short_video_comment_sheet_test.dart test/short_video_settings_test.dart test/playback_lifecycle_speed_test.dart test/short_video_recommendation_test.dart
-flutter analyze lib/pages/short_video lib/pages/setting/widgets/fixed_speed_setting.dart lib/pages/setting/models/short_video_settings.dart lib/utils/fixed_playback_speed.dart test/short_video_comment_sheet_test.dart test/short_video_settings_test.dart test/playback_lifecycle_speed_test.dart test/short_video_recommendation_test.dart
+flutter test
+flutter analyze
 ```
 
 保留仓库中的 `pubspec.lock`，使用 Gradle Wrapper；不要把开发机的 `local.properties`、缓存、账号信息或签名材料提交到仓库。
-上游 CI 含额外的 Flutter SDK 调整；修改 SDK 或升级依赖后，需要重跑手势和面板测试，不能只凭构建成功判断兼容。
+上游 CI 含额外的 Flutter SDK 与 material_ui 调整，补丁清单见 `lib/scripts/patch.ps1`；使用匹配版本的独立 SDK 应用 Android 对应补丁。该脚本包含重置 SDK 和删除依赖缓存的操作，已有定制环境应逐项检查并应用，不直接执行整个脚本。修改 SDK 或升级依赖后，需要重跑手势和面板测试，不能只凭构建成功判断兼容。
 
 ## 签名
 
@@ -51,9 +51,9 @@ flutter build apk --release --target-platform android-arm64
 
 ```powershell
 @{
-  'pili.name' = '2.1.6.13'
-  'pili.code' = 13
-  'pili.hash' = (git rev-parse HEAD).Trim()
+  'pili.name' = '2.1.6.19'
+  'pili.code' = 19
+  'pili.hash' = (git rev-parse --short HEAD).Trim() + $(if (git status --porcelain) { '-working' } else { '' })
   'pili.time' = [DateTimeOffset]::Now.ToUnixTimeSeconds()
 } | ConvertTo-Json -Compress | Set-Content -Encoding utf8 pili_release.json
 flutter build apk --release --target-platform android-arm64 --dart-define-from-file=pili_release.json
@@ -80,6 +80,27 @@ apksigner verify --print-certs build/app/outputs/flutter-apk/app-release.apk
 - 本仓库只做本地构建/测试时，不代表 GitHub Releases 已发布新 APK。
 - 真机至少验证：快速/反向滑动、连续播放、评论与子评论滚动/返回、断网重试、通知栏与锁屏恢复、手动暂停、临时/固定倍速、清除推荐记录，以及关闭移动网络预加载。
 - 自动化测试使用假的网络响应和原生播放器，不能替代实际设备的网络、解码、耗电或帧耗时检查。
+
+## 2.1.6.19（19）当前版本
+
+- `pubspec.yaml` 为 `2.1.6+19`；Android 版本名 `2.1.6.19`，versionCode `19`，沿用包名、签名与 ARM64 Release 配置。
+- 同步 PiliNara `1db0d72e4`、PiliPlus `d0e03529b`，版本不随上游改为 2.2.0。构建 SDK 升为 Flutter 3.47.9，保留依赖锁文件和对应补丁。
+- 竖屏与普通播放器共享 Wi-Fi / 移动网络的全屏画质偏好，切换成功才保存；临时降档不覆盖偏好。预加载邻居在激活时重新检查，保留当前进度和暂停状态。
+- 画质、生命周期及预加载测试采用替代响应/播放器；真实账号权限、解码和滑动体验需要手机验收。
+- 本次源代码验证：完整 258 项测试通过；全项目静态检查 0 错误、0 警告，另有 64 条提示。界面测试使用内存设置盒，画质单元测试使用临时文件存储；不把自动验证视为真机验收。
+
+## 2.1.6.18（18）
+
+- `pubspec.yaml` 为 `2.1.6+18`；Android 版本名 `2.1.6.18`，versionCode `18`，ARM64 Release。
+- 竖屏与普通播放器对齐完整画质请求、试看条件及缺失画质补取，实际可用档位仍由账号与视频决定。
+- 新增 `short_video_quality_test.dart`，使用替代 HTTP 响应覆盖请求参数、试看开关、高画质地址和降级，不代表真实账号的画质权限或设备解码验收。
+
+## 2.1.6.17（17）
+
+- `pubspec.yaml` 使用 `2.1.6+17`，Android 显示 `2.1.6.17`，versionCode 为 `17`；继续使用原包名、ARM64 Release 与同一签名。
+- 新增全部 21 个视频分区快捷搜索词；改进搜索重试与键盘布局；推荐视频方向改为三选一；移除画面适配说明框。
+- 搜索、方向设置、播放生命周期、推荐与评论共五组测试；自动化验证不代表设备体验验收。
+- 交付后可将 APK 复制到项目外的输出目录，再清理 `build/` 中间产物。保留 `pubspec.lock`、平台工程、源码和签名配置；下次构建会重新生成中间文件。
 
 ## 2.1.6.13（13）上游同步
 

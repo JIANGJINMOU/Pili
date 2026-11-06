@@ -154,7 +154,9 @@ abstract final class ReplyGrpc {
         if (needRemoveGrpc(topReply, upMid: upMid)) {
           response.clearUpTop();
         } else {
-          topReply.replies.removeWhere((reply) => needRemoveGrpc(reply, upMid: upMid));
+          topReply.replies.removeWhere(
+            (reply) => needRemoveGrpc(reply, upMid: upMid),
+          );
         }
       }
 

@@ -1,4 +1,5 @@
 import 'package:PiliPlus/pages/short_video/display_preferences.dart';
+import 'package:PiliPlus/pages/setting/widgets/short_video_display_setting.dart';
 import 'package:PiliPlus/pages/short_video/subtitle_preferences.dart';
 import 'package:PiliPlus/pages/setting/widgets/short_video_subtitle_setting.dart';
 
@@ -58,6 +59,16 @@ class RecordingController extends ShortVideoController {
 }
 
 void main() {
+  test('UP playback preference defaults off and reads persisted value', () {
+    expect(ShortVideoPreferences.fromMap({}).creatorPlayback, isFalse);
+    expect(
+      ShortVideoPreferences.fromMap({
+        SettingBoxKey.shortVideoCreatorPlayback: true,
+      }).creatorPlayback,
+      isTrue,
+    );
+  });
+
   test('subtitle settings are opt-in, bounded, and tolerate legacy fill', () {
     final defaults = ShortVideoPreferences.fromMap({
       SettingBoxKey.shortVideoFill: true,
@@ -196,7 +207,7 @@ void main() {
     expect(find.text('完整画面 · 独立偏好 · 即时生效'), findsNothing);
     expect(find.text('AI 字幕翻译'), findsNothing);
     expect(find.text('AI 服务配置'), findsNothing);
-    expect(find.byType(Card), findsNWidgets(5));
+    expect(find.byType(Card), findsNWidgets(6));
     await tapSetting(tester, '竖屏字幕');
     expect(ShortVideoPreferences.read().subtitlesEnabled, isTrue);
     await tapSetting(tester, '字幕样式');
@@ -463,6 +474,35 @@ void main() {
       isFalse,
     );
   });
+
+  testWidgets(
+    'orientation choices persist one value and allow returning to all videos',
+    (tester) async {
+      await tester.runAsync(
+        () => GStorage.setting.putAll({
+          SettingBoxKey.shortVideoOnlyHorizontal: false,
+          SettingBoxKey.shortVideoOnlyVertical: false,
+        }),
+      );
+      await tester.pumpWidget(
+        app(const Scaffold(body: ShortVideoOrientationSetting())),
+      );
+      await tapSetting(tester, '仅横屏');
+      expect(ShortVideoPreferences.read().onlyHorizontal, isTrue);
+      expect(ShortVideoPreferences.read().onlyVertical, isFalse);
+      await tapSetting(tester, '仅竖屏');
+      expect(ShortVideoPreferences.read().onlyHorizontal, isFalse);
+      expect(ShortVideoPreferences.read().onlyVertical, isTrue);
+      final chips = tester
+          .widgetList<ChoiceChip>(find.byType(ChoiceChip))
+          .toList();
+      expect(chips.map((v) => v.selected), [false, false, true]);
+      await tapSetting(tester, '全部');
+      expect(ShortVideoPreferences.read().onlyHorizontal, isFalse);
+      expect(ShortVideoPreferences.read().onlyVertical, isFalse);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
 
   test(
     'default settings preserve existing entry and malformed values are safe',

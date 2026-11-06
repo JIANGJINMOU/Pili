@@ -129,7 +129,7 @@ List<SettingsModel> get recommendSettings => [
   NormalModel(
     title: '屏蔽无权查看视频',
     leading: const Icon(Icons.block_outlined),
-    getSubtitle: () => Pref.rcmdMode != RcmdMode.web
+    getSubtitle: () => Pref.rcmdMode.hasAppSource
         ? '仅对首页 app 端推荐生效，屏蔽无权查看的视频(如充电专属视频)'
         : '仅对首页 app 端推荐生效，请先切换为App端推荐或合并模式',
     getTrailing: (_) => StreamBuilder<BoxEvent>(
@@ -140,7 +140,7 @@ List<SettingsModel> get recommendSettings => [
       ),
       builder: (_, _) => Switch(
         value: Pref.removeBlockedRcmd,
-        onChanged: Pref.rcmdMode != RcmdMode.web
+        onChanged: Pref.rcmdMode.hasAppSource
             ? (value) {
                 GStorage.setting.put(SettingBoxKey.removeBlockedRcmd, value);
               }
@@ -148,7 +148,7 @@ List<SettingsModel> get recommendSettings => [
       ),
     ),
     onTap: (context, setState) {
-      if (Pref.rcmdMode == RcmdMode.web) {
+      if (!Pref.rcmdMode.hasAppSource) {
         return;
       }
       GStorage.setting.put(

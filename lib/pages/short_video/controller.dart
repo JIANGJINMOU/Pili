@@ -1,5 +1,11 @@
+import 'package:PiliPlus/utils/accounts.dart';
+import 'package:PiliPlus/utils/storage_pref.dart';
+
 import 'dart:async';
 
+import 'package:PiliPlus/pages/short_video/search_feed.dart';
+
+import 'package:PiliPlus/pages/short_video/creator_feed.dart';
 import 'package:PiliPlus/pages/short_video/launch.dart';
 
 import 'package:PiliPlus/pages/short_video/recommendation/candidate.dart';
@@ -10,12 +16,14 @@ import 'package:PiliPlus/pages/short_video/recommendation/recommendation_storage
 import 'package:PiliPlus/http/loading_state.dart';
 import 'package:PiliPlus/http/search.dart';
 import 'package:PiliPlus/http/video.dart';
-import 'package:PiliPlus/models/common/video/video_quality.dart';
+import 'package:PiliPlus/models/common/video/base_quality.dart';
 import 'package:PiliPlus/models/common/video/video_type.dart';
 import 'package:PiliPlus/models/model_rec_video_item.dart';
 import 'package:PiliPlus/models/video/play/url.dart';
 import 'package:PiliPlus/utils/extension/dimension_ext.dart';
 import 'package:PiliPlus/utils/id_utils.dart';
+import 'package:PiliPlus/utils/extension/iterable_ext.dart';
+import 'package:PiliPlus/utils/playback_quality.dart';
 import 'package:PiliPlus/pages/short_video/preferences.dart';
 import 'package:get/get.dart';
 
@@ -39,15 +47,22 @@ class ShortVideoSource {
       : (isVertical ? 9 / 16 : 16 / 9);
   final int quality;
   final Map<int, String> qualityUrls;
+
+  int qualityFor(int preferred) => qualityUrls.isEmpty
+      ? quality
+      : qualityUrls.keys.toList().findTargetMedia((e) => e, preferred);
 }
 
 class ShortVideoController extends GetxController {
+  static final instances = <ShortVideoController>{};
   ShortVideoController({
     this.preferences = const ShortVideoPreferences(),
     Future<LoadingState<List<BaseRcmdVideoItemModel>>> Function(int)?
     metadataLoader,
     this.sourceResolver,
     this.initialLaunch,
+    this.creatorFeedFactory = CreatorVideoFeed.new,
+    this.searchFeedFactory = ShortVideoSearchFeed.new,
     RecommendationStorage? storage,
     RecommendationEngine? engine,
   }) : _metadataLoader =
@@ -58,6 +73,13 @@ class ShortVideoController extends GetxController {
 
   final ShortVideoLaunch? initialLaunch;
   ShortVideoLaunch? _launch;
+  CreatorVideoFeed? _creatorFeed;
+  final CreatorVideoFeed Function(int, int) creatorFeedFactory;
+  bool get isCreatorFeed => _creatorFeed != null;
+  ShortVideoSearchFeed? searchFeed;
+  bool get isSearchFeed => searchFeed != null;
+  String? get searchQuery => searchFeed?.query;
+  final ShortVideoSearchFeed Function(String) searchFeedFactory;
   Duration _launchPosition = Duration.zero;
   final launchRevision = 0.obs;
 
@@ -82,7 +104,20 @@ class ShortVideoController extends GetxController {
     _refill = null;
     _pool.clear();
     _sourceCache.clear();
+    if (launch.creatorMid != null ||
+        isCreatorFeed ||
+        isSearchFeed ||
+        launch.searchFeed != null) {
+      _queued.clear();
+    }
     _queued.add(launch.item.aid!);
+    searchFeed = launch.searchFeed;
+    if (launch.searchItems != null) {
+      _queued.addAll(launch.searchItems!.map((item) => item.aid!));
+    }
+    _creatorFeed = launch.creatorMid == null
+        ? null
+        : creatorFeedFactory(launch.creatorMid!, launch.item.aid!);
     while (_queued.length > 1000) {
       _queued.remove(_queued.first);
     }
@@ -94,7 +129,7 @@ class ShortVideoController extends GetxController {
     isLoadingMore.value = false;
     errorMessage.value = null;
     loadMoreError.value = null;
-    items.assignAll([launch.item]);
+    items.assignAll(launch.searchItems ?? [launch.item]);
     launchRevision.value++;
   }
 
@@ -116,7 +151,7 @@ class ShortVideoController extends GetxController {
   final _queued = <int>{};
   final Map<int, Future<ShortVideoSource>> _sourceCache = {};
   int _freshIdx = 0;
-  bool? _refreshingVertical;
+  (bool, bool)? _refreshingVertical;
   int _feedEpoch = 0;
   Future<void>? _refill;
   int _refillEpoch = -1;
@@ -128,6 +163,7 @@ class ShortVideoController extends GetxController {
   @override
   void onInit() {
     super.onInit();
+    instances.add(this);
     if (preferences.enabled) {
       if (initialLaunch case final launch?) {
         startFrom(launch);
@@ -192,12 +228,44 @@ class ShortVideoController extends GetxController {
   Future<void> get flushProfile => _writes;
 
   Future<void> refreshFeed() async {
-    if (isClosed ||
-        !preferences.enabled ||
-        _refreshingVertical == preferences.onlyVertical) {
+    if (isSearchFeed) {
+      if (isInitialLoading.value || isClosed) return;
+      final epoch = ++_feedEpoch;
+      searchFeed = searchFeedFactory(searchQuery!);
+      isInitialLoading.value = true;
+      isLoadingMore.value = false;
+      errorMessage.value = loadMoreError.value = null;
+      _queued.clear();
+      try {
+        final next = await searchFeed!.load();
+        if (isClosed || epoch != _feedEpoch) return;
+        items.assignAll(next);
+        _sourceCache.clear();
+        _queued.addAll(next.map((item) => item.aid!));
+        if (next.isEmpty) errorMessage.value = '暂无标题或标签匹配的视频';
+        launchRevision.value++;
+      } catch (_) {
+        if (!isClosed && epoch == _feedEpoch) errorMessage.value = '搜索失败，点击重试';
+      } finally {
+        if (!isClosed && epoch == _feedEpoch) isInitialLoading.value = false;
+      }
       return;
     }
-    _refreshingVertical = preferences.onlyVertical;
+    if (isCreatorFeed && _launch != null) {
+      startFrom(_launch!);
+      await loadMore();
+      return;
+    }
+    if (isClosed ||
+        !preferences.enabled ||
+        _refreshingVertical ==
+            (preferences.onlyVertical, preferences.onlyHorizontal)) {
+      return;
+    }
+    _refreshingVertical = (
+      preferences.onlyVertical,
+      preferences.onlyHorizontal,
+    );
     final epoch = ++_feedEpoch;
     isLoadingMore.value = false;
     isInitialLoading.value = true;
@@ -212,8 +280,9 @@ class ShortVideoController extends GetxController {
       if (isClosed || epoch != _feedEpoch) return;
       final next = _select();
       if (next.isEmpty) {
-        errorMessage.value = preferences.onlyVertical
-            ? '暂无已标注竖向的视频，可关闭“仅竖向视频”后重试'
+        errorMessage.value =
+            preferences.onlyHorizontal || preferences.onlyVertical
+            ? '暂无已标注${preferences.onlyHorizontal ? '横屏' : '竖屏'}的视频，可将推荐视频方向改为“全部”后重试'
             : '暂时没有新的视频，请稍后重试';
         if (items.isNotEmpty) loadMoreError.value = errorMessage.value;
       } else {
@@ -257,7 +326,7 @@ class ShortVideoController extends GetxController {
             continue;
           }
           final candidate = ShortVideoCandidate(item);
-          if (preferences.onlyVertical && candidate.vertical != true) continue;
+          if (!preferences.acceptOrientation(candidate.vertical)) continue;
           _pool.putIfAbsent(candidate.aid, () => candidate);
           if (_pool.length >= 100) break;
         }
@@ -299,6 +368,28 @@ class ShortVideoController extends GetxController {
     final epoch = _feedEpoch;
     loadMoreError.value = null;
     try {
+      if (searchFeed case final feed?) {
+        final next = await feed.load();
+        if (isClosed || epoch != _feedEpoch) return;
+        items.addAll(next.where((v) => _queued.add(v.aid!)));
+        while (_queued.length > 1000) {
+          _queued.remove(_queued.first);
+        }
+        if (next.isEmpty || feed.ended) {
+          loadMoreError.value = feed.ended ? '已加载全部匹配视频' : '暂无更多匹配视频，点击继续查找';
+        }
+        return;
+      }
+      if (_creatorFeed case final feed?) {
+        final next = await feed.load();
+        if (isClosed || epoch != _feedEpoch) return;
+        items.addAll(next.where((v) => _queued.add(v.aid!)));
+        while (_queued.length > 1000) {
+          _queued.remove(_queued.first);
+        }
+        if (feed.ended) loadMoreError.value = '已看完这位UP主的视频';
+        return;
+      }
       if (_pool.length < 20) await _ensurePool(epoch, 60);
       if (isClosed || epoch != _feedEpoch) return;
       final next = _select();
@@ -325,7 +416,9 @@ class ShortVideoController extends GetxController {
   void onPageChanged(int index) {
     if (index >= items.length - 6) {
       unawaited(loadMore());
-    } else if (_pool.length < 20 &&
+    } else if (!isCreatorFeed &&
+        !isSearchFeed &&
+        _pool.length < 20 &&
         !isInitialLoading.value &&
         preferences.enabled) {
       // Metadata only: refill before the visible queue reaches its tail.
@@ -336,6 +429,7 @@ class ShortVideoController extends GetxController {
 
   @override
   void onClose() {
+    instances.remove(this);
     _feedEpoch++;
     _sourceCache.clear();
     _pool.clear();
@@ -404,16 +498,33 @@ class ShortVideoController extends GetxController {
       throw StateError('无法获取视频分P信息');
     }
 
-    final result = await VideoHttp.videoUrl(
+    final tryLook = !Accounts.video.isLogin && Pref.p1080;
+    Future<LoadingState<PlayUrlModel>> load(int quality) => VideoHttp.videoUrl(
       avid: aid,
       bvid: bvid,
-      cid: cid,
-      qn: VideoQuality.high720.code,
-      tryLook: true,
+      cid: cid!,
+      qn: quality,
+      tryLook: tryLook,
       videoType: VideoType.ugc,
     );
+    final result = await load(VideoQuality.hdrVivid.code);
     if (result case Success(:final response)) {
-      final source = _pickSource(response);
+      if (response.dash?.video?.isNotEmpty == true) {
+        final missing = response.missingVideoQualityBelowHighest;
+        if (missing != -1) {
+          // Supplement advertised streams like the ordinary player; failure
+          // must not discard already playable qualities.
+          try {
+            if (await load(missing) case Success(response: final additional)) {
+              response.dash!.video!.merge(additional.dash?.video);
+            }
+          } catch (_) {}
+        }
+      }
+      final source = _pickSource(
+        response,
+        quality: await PlaybackQuality.preferred,
+      );
       final qualityUrls = <int, String>{};
       for (final video in response.dash?.video ?? []) {
         final selected = _pickSource(response, quality: video.id);
@@ -436,18 +547,15 @@ class ShortVideoController extends GetxController {
 
   (String, bool?, int, double?)? _pickSource(
     PlayUrlModel playUrl, {
-    int quality = 64,
+    required int quality,
   }) {
     final dash = playUrl.dash;
     if (dash?.video case final videos? when videos.isNotEmpty) {
-      final candidates = videos.where((item) => item.id <= quality).toList();
-      final pool = candidates.isEmpty ? [...videos] : candidates
-        ..sort((a, b) {
-          final quality = b.id.compareTo(a.id);
-          if (quality != 0) return quality;
-          return (a.codecid == 7 ? 0 : 1).compareTo(b.codecid == 7 ? 0 : 1);
-        });
-      final video = pool.first;
+      final target = videos.findTargetMedia((e) => e.id, quality).id;
+      final video = videos.firstWhere(
+        (e) => e.id == target && e.codecid == 7,
+        orElse: () => videos.firstWhere((e) => e.id == target),
+      );
       final videoUrl = video.playUrls.firstOrNull;
       if (videoUrl != null) {
         final audioUrl = dash?.audio?.firstOrNull?.playUrls.firstOrNull;

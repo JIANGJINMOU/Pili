@@ -1,53 +1,60 @@
 <div align="center">
-    <img width="200" height="200" src="assets/images/logo/logo.png">
+  <img width="160" height="160" src="assets/images/logo/logo.png" alt="PiliNara 标志">
+  <h1>PiliNara</h1>
+  <p>基于 PiliPlus / PiliNara 的个人分支，重点完善 Android 竖屏视频体验。</p>
 </div>
 
-
-
-<div align="center">
-    <h1>PiliNara</h1>
-<div align="center">
-
-</div>
-</div>
-    <p>基于PiliPlus做了一些自用修改</p>
-    
-<img src="assets/screenshots/510shots_so.png" width="32%" alt="home" />
-<img src="assets/screenshots/174shots_so.png" width="32%" alt="home" />
-<img src="assets/screenshots/850shots_so.png" width="32%" alt="home" />
-<br/>
-<img src="assets/screenshots/main_screen.png" width="96%" alt="home" />
-<br/>
-</div>
-
-
-<br/>
+<p align="center">
+  <img src="assets/screenshots/510shots_so.png" width="32%" alt="首页截图">
+  <img src="assets/screenshots/174shots_so.png" width="32%" alt="功能截图">
+  <img src="assets/screenshots/850shots_so.png" width="32%" alt="界面截图">
+</p>
 
 ## 项目说明
 本仓库为 [JIANGJINMOU/Pili](https://github.com/JIANGJINMOU/Pili)，基于
 [Starfallan/PiliNara](https://github.com/Starfallan/PiliNara) 继续开发，重点完善 Android 竖屏视频。
 应用显示名称仍为 **PiliNara**；以下保留上游功能说明与致谢。
 
-### 本分支新增：Android 竖屏视频
+### 当前版本：2.1.6.19（19）
 
-- 首页竖屏入口，支持上下翻页、自动播放/自动下一条、双击清屏、长按临时倍速。
-- 底部评论面板与子评论，不跳转详情页；首评和回复一起滚动，面板打开时锁定视频翻页。
-- 三种滑动风格：柔和渐缓停靠、利落轻甩快切、标准翻页；滑动中保持当前播放器，停稳后切换。
-- 独立竖屏设置：入口开关、预加载、网络策略、适配方式、固定倍速（设置保留开关，倍率在播放器底栏选择）。
-- 竖屏弹幕与字幕独立开关，支持字幕位置、颜色、字号、背景、行数等样式；画面默认原比例完整显示，可选固定比例、裁切或拉伸。
-- 进度条即时拖动预览、松手跳转；全屏入口直接复用全屏播放器，返回竖屏保留进度；评论视口按视频比例联动缩放。
-- 上游推荐元数据候选池 + 本地轻量排序 + 按需解析播放地址，不一次加载大量视频。
-- 本地兴趣学习可关闭、记录可清除；通知栏/后台恢复保留播放进度和手动暂停状态。
+Android 包名为 **`com.example.pilinara`**，交付 **ARM64 Release** 安装包。同步两层上游后继续沿用本分支 `2.1.6.x` 版本序列，构建使用 Flutter 3.47.9。
 
-当前版本 **2.1.6.13（13）**：同步上游 2.1.6，保留本分支竖屏功能。构建环境升级至 Flutter 3.47.7。
+| 功能 | 使用方式 |
+| --- | --- |
+| 竖屏播放 | 从首页或详情播放器进入；切换保留当前视频、分 P 与进度 |
+| 搜索 | 竖屏顶部搜索入口，按标题和标签匹配；确认播放首条，上下滑动继续看同一搜索词的结果 |
+| 分区快捷词 | 复用项目现有全部 21 个视频分区；点选填入关键词，编辑后确认搜索，不代表按分区 ID 过滤 |
+| 评论与回复 | 视频按比例缩小、亮度不变；评论可下拉关闭，楼中楼首评随回复滚动 |
+| 播放控制 | 进度拖动、清晰度、倍速、静音、弹幕、字幕、清屏、独立详情与直接全屏 |
+| 推荐视频方向 | 设置 → 竖屏设置 → 网络与推荐，选择「全部 / 仅横屏 / 仅竖屏」；不影响搜索、UP 投稿和主动选择 |
+| UP 投稿 | 可开启「UP主页默认竖屏播放」，后续滑动只播放该 UP 的投稿 |
+| 推荐与预加载 | 元数据候选池 + 本地轻量排序，按需解析视频；默认仅 Wi-Fi/有线网络预加载下一条 |
 
-**当前 Android 包名：`com.example.pilinara`，构建仅保留 `arm64-v8a`。**
-旧测试包 `com.examole.pili` 是不同应用，数据不会自动迁移。相同包名的覆盖安装仍要求签名一致。
+- 画面显示、手势、字幕、弹幕与网络推荐分别分组；三种滑动风格、自动下一条、固定倍速均可配置。
+- 播放期间保持屏幕常亮；下拉通知栏继续播放，退后台后暂停并保留进度。
+- 本地兴趣学习可关闭，推荐记录可清除；不会一次创建大量播放器。
+- 竖屏清晰度按视频和账号实际可播放地址展示，与普通播放器使用一致的完整画质请求和试看条件；支持返回的 4K、1080P60、高码率等档位。
+- 竖屏默认画质跟随普通播放器的全屏设置，Wi-Fi 与移动网络分别记忆；手动选择成功后应用到后续视频，已预加载的视频也会在播放前更新。不支持所选档位时临时回退，不覆盖原有偏好；普通播放器单独设置的半屏上限仍只用于半屏。
+- 搜索支持清空、加载反馈、失败重试及继续查找；分区词区域可滚动，键盘弹出后仍可确认搜索。
 
-- [竖屏功能、架构与回归说明](docs/short-video-recommendation.md)
-- [Android Release 构建与安装说明](docs/android-build.md)
+### 文档与构建
 
-> 测试和编译成功不等于真机验收。网络可用性、解码性能、滑动手感及推荐质量仍需设备验证。
+本次合并 [PiliNara `1db0d72e4`](https://github.com/Starfallan/PiliNara/commit/1db0d72e4) 与 [PiliPlus `d0e03529b`](https://github.com/bggRGjQaUbCoE/PiliPlus/commit/d0e03529b)，保留本分支竖屏、推荐和播放控制。推荐源合并为同一组选项，支持 App / Web / 桌面 / 合并，兼容原设置。
+
+- [更新日志](CHANGELOG.md)：本分支版本记录与上游历史。
+- [竖屏功能、架构与回归说明](docs/short-video-recommendation.md)。
+- [Android Release 构建与安装说明](docs/android-build.md)：环境、签名与检查步骤。
+
+```sh
+flutter pub get
+flutter test
+flutter build apk --release --target-platform android-arm64 --dart-define-from-file=pili_release.json
+```
+
+构建前按构建文档生成本地 `pili_release.json`，否则「关于」页面显示 SNAPSHOT。保留 `pubspec.lock` 和定制依赖；构建缓存不属于源码，可在保存 APK 后用 `flutter clean` 重新生成。
+
+旧测试包 `com.examole.pili` 与当前应用相互独立，数据不会自动迁移；相同包名覆盖安装需要签名一致。
+测试使用替代网络响应和播放器；真实手机的网络、解码、息屏及滑动手感仍需设备验证。本地 APK 不代表 GitHub Releases 已发布。
 
 ### 上游项目说明
 - 本项目PiliNara是基于[PiliPlus](https://github.com/bggRGjQaUbCoE/PiliPlus)进行修改的,做了一些自用的改动.

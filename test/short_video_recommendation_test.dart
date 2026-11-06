@@ -1,3 +1,8 @@
+import 'package:PiliPlus/pages/short_video/creator_feed.dart';
+import 'package:PiliPlus/models_new/space/space_archive/data.dart';
+import 'package:PiliPlus/models_new/space/space_archive/item.dart';
+import 'package:PiliPlus/utils/id_utils.dart';
+
 import 'dart:async';
 
 import 'package:PiliPlus/pages/short_video/launch.dart';
@@ -82,6 +87,107 @@ class DisposalPlayer implements Player {
 }
 
 void main() {
+  test('UP profile selection launches without optional duration or cover', () {
+    final selected = ShortVideoLaunch.fromCreator(
+      mid: 42,
+      aid: 99,
+      bvid: IdUtils.av2bv(99),
+      cid: 990,
+    );
+    expect(selected.creatorMid, 42);
+    expect(selected.item.aid, 99);
+    expect(selected.item.cid, 990);
+    expect(selected.item.duration, 0);
+    expect(selected.position, Duration.zero);
+  });
+
+  test('UP cursor retries keep the cursor and stop at end', () async {
+    final calls = <(String, bool)>[];
+    var fail = true;
+    final feed = CreatorVideoFeed(
+      42,
+      99,
+      fetch: (cursor, includeCursor) async {
+        calls.add((cursor, includeCursor));
+        if (fail) {
+          fail = false;
+          return const Error('offline');
+        }
+        return Success(
+          SpaceArchiveData(
+            item: [
+              SpaceArchiveItem.fromJson({
+                'bvid': IdUtils.av2bv(includeCursor ? 101 : 102),
+                'param': includeCursor ? '101' : '102',
+                'title': 'UP video',
+                'first_cid': 1001,
+              }),
+            ],
+            hasNext: includeCursor,
+          ),
+        );
+      },
+    );
+    await expectLater(feed.load(), throwsStateError);
+    final videos = await feed.load();
+    expect(calls, [('99', true), ('99', true)]);
+    expect(videos.single.owner.mid, 42);
+    expect(videos.single.aid, 101);
+    fail = true;
+    await expectLater(feed.load(), throwsStateError);
+    expect((await feed.load()).single.aid, 102);
+    expect(calls, [('99', true), ('99', true), ('101', false), ('101', false)]);
+    expect(await feed.load(), isEmpty);
+    expect(calls.length, 4);
+  });
+
+  test(
+    'UP feed bypasses recommendations and keeps selected video first',
+    () async {
+      var recommendations = 0;
+      final selected = ShortVideoLaunch.fromCreator(
+        mid: 42,
+        aid: 99,
+        bvid: IdUtils.av2bv(99),
+        cid: 990,
+      );
+      final c = ShortVideoController(
+        initialLaunch: selected,
+        preferences: const ShortVideoPreferences(onlyVertical: true),
+        metadataLoader: (_) async {
+          recommendations++;
+          return Success([item(88)]);
+        },
+        creatorFeedFactory: (mid, aid) => CreatorVideoFeed(
+          mid,
+          aid,
+          fetch: (_, _) async => Success(
+            SpaceArchiveData(
+              item: [
+                SpaceArchiveItem.fromJson({
+                  'bvid': IdUtils.av2bv(99),
+                  'title': 'selected',
+                }),
+                SpaceArchiveItem.fromJson({
+                  'bvid': IdUtils.av2bv(100),
+                  'title': 'next',
+                }),
+              ],
+              hasNext: false,
+            ),
+          ),
+        ),
+      )..onInit();
+      await c.loadMore();
+      expect(c.items.map((v) => v.aid), [99, 100]);
+      expect(c.items.first.cid, 990);
+      await c.loadMore();
+      expect(recommendations, 0);
+      expect(c.items.length, 2);
+      c.onClose();
+    },
+  );
+
   test('detail conversion uses current identity, selected part and millisecond position', () {
     final launch = ShortVideoLaunch.fromDetail(
       detail: VideoDetailData(

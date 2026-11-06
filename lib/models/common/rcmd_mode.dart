@@ -10,4 +10,6 @@ enum RcmdMode with EnumWithLabel {
   @override
   final String label;
   const RcmdMode(this.label);
+
+  bool get hasAppSource => this == app || this == merged;
 }

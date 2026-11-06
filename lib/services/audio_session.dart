@@ -50,8 +50,9 @@ class AudioSessionHandler {
       // final player = PlPlayerController.getInstance();
       if (event.begin) {
         if (playerStatus != PlayerStatus.playing &&
-            videoPlayerServiceHandler?.isPlaying?.call() != true)
+            videoPlayerServiceHandler?.isPlaying?.call() != true) {
           return;
+        }
         // if (!player.playerStatus.playing) return;
         switch (event.type) {
           case AudioInterruptionType.duck:

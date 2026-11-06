@@ -19,6 +19,7 @@ class RcmdController extends CommonListController {
   // 合并模式专用页码：Web端由基类 page 管理（自动 ++），App端在此自管
   int _appPage = 0;
   bool _isFirstPage = false;
+  Future<void>? _pendingQuery;
 
   @override
   bool get isEnd => false;
@@ -126,8 +127,17 @@ class RcmdController extends CommonListController {
   }
 
   @override
-  Future<void> onReload() {
-    loadingState.value = const LoadingState.loading();
+  Future<void> queryData([bool isRefresh = true]) {
+    if (isLoading) return _pendingQuery ?? Future<void>.value();
+    return _pendingQuery = super.queryData(isRefresh);
+  }
+
+  @override
+  Future<void> onReload() async {
+    // A source change must reload after an earlier request releases isLoading.
+    await _pendingQuery;
+    if (isClosed) return;
+    loadingState.value = LoadingState.loading();
     lastRefreshAt = null;
     return onRefresh();
   }

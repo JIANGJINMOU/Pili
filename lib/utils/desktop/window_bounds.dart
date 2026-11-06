@@ -31,11 +31,19 @@ Offset calcWindowOffset({
   if (savedPosition != null) {
     final dx = savedPosition.dx;
     final dy = savedPosition.dy;
-    if (dx > workArea.left + kWindowKeepVisible &&
-        dy > workArea.top + kWindowKeepVisible &&
-        dx < workArea.right - kWindowKeepVisible &&
-        dy < workArea.bottom - kWindowKeepVisible) {
-      return Offset(dx, dy);
+    final visible = (savedPosition & windowSize).intersect(workArea);
+    if (visible.width >= math.min(kWindowKeepVisible, windowSize.width) &&
+        visible.height >= math.min(kWindowKeepVisible, windowSize.height)) {
+      return Offset(
+        dx.clamp(
+          workArea.left,
+          math.max(workArea.left, workArea.right - windowSize.width),
+        ),
+        dy.clamp(
+          workArea.top,
+          math.max(workArea.top, workArea.bottom - windowSize.height),
+        ),
+      );
     }
   }
 

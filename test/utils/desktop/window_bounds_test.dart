@@ -50,6 +50,28 @@ void main() {
   });
 
   group('calcWindowOffset', () {
+    test('保存位置贴在工作区边缘时不重新居中', () {
+      expect(
+        calcWindowOffset(
+          windowSize: const Size(1180, 720),
+          workArea: const Rect.fromLTWH(0, 0, 1920, 1080),
+          savedPosition: Offset.zero,
+        ),
+        Offset.zero,
+      );
+    });
+
+    test('左上角部分越界时拉回工作区', () {
+      expect(
+        calcWindowOffset(
+          windowSize: const Size(1180, 720),
+          workArea: const Rect.fromLTWH(0, 0, 1920, 1080),
+          savedPosition: const Offset(-100, -80),
+        ),
+        Offset.zero,
+      );
+    });
+
     test('小屏上窗口正好铺满工作区', () {
       expect(
         calcWindowOffset(

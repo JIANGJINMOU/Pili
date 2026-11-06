@@ -75,7 +75,7 @@ import 'package:native_device_orientation/native_device_orientation.dart';
 import 'package:nativeapi/nativeapi.dart' as nativeapi show Size, Rectangle;
 import 'package:path/path.dart' as path;
 import 'package:screen_brightness_platform_interface/screen_brightness_platform_interface.dart';
-import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:PiliPlus/utils/playback_wakelock.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:PiliPlus/plugin/pl_player/models/auto_audio_only_state.dart';
 
@@ -105,6 +105,14 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
 
   int get positionInMilliseconds =>
       videoPlayerController?.state.position.inMilliseconds ?? 0;
+
+  Duration get handoffPosition => Duration(
+    milliseconds: isSeeking.value
+        ? seekPosition.value * 1000
+        : positionInMilliseconds > 0
+        ? positionInMilliseconds
+        : position.value * 1000,
+  );
 
   final RxInt buffered = RxInt(0);
 
@@ -199,9 +207,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     required String bvid,
     required int cid,
   }) =>
-      dataStatus.value == DataStatus.loaded &&
-      _bvid == bvid &&
-      this.cid == cid;
+      dataStatus.value == DataStatus.loaded && _bvid == bvid && this.cid == cid;
 
   /// 视频播放速度
   double get playbackSpeed => _playbackSpeed.value;
@@ -573,8 +579,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
       (tempPlayerConf ? 0 : Pref.videoSaturation).obs;
   late final RxInt videoGamma = (tempPlayerConf ? 0 : Pref.videoGamma).obs;
   late final RxInt videoHue = (tempPlayerConf ? 0 : Pref.videoHue).obs;
-  late final RxInt audioDelayMs =
-      (tempPlayerConf ? 0 : Pref.audioDelayMs).obs;
+  late final RxInt audioDelayMs = (tempPlayerConf ? 0 : Pref.audioDelayMs).obs;
   Timer? _videoPictureSaveTimer;
 
   late int? cacheVideoQa = PlatformUtils.isMobile || Platform.isLinux
@@ -899,11 +904,13 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     resetAllVideoPictureParameters(persist: false);
   }
 
-  int _normalizeVideoPictureParameter(num value) =>
-      value.round().clamp(
+  int _normalizeVideoPictureParameter(num value) => value
+      .round()
+      .clamp(
         videoPictureParameterMin,
         videoPictureParameterMax,
-      ).toInt();
+      )
+      .toInt();
 
   RxInt? _videoPictureParameterState(String property) => switch (property) {
     'brightness' => videoBrightness,
@@ -1204,10 +1211,13 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     final opt = {
       'video-sync': Pref.videoSync,
       if (Platform.isAndroid) 'ao': Pref.audioOutput,
-      'volume': (PlatformUtils.isMobile
-              ? (Pref.enableAppVolume ? volume.value * 100 : Pref.playerVolume)
-              : volume.value * 100)
-          .toString(),
+      'volume':
+          (PlatformUtils.isMobile
+                  ? (Pref.enableAppVolume
+                        ? volume.value * 100
+                        : Pref.playerVolume)
+                  : volume.value * 100)
+              .toString(),
       'volume-max': kMaxVolume.toString(),
     };
     final autosync = Pref.autosync;
@@ -1374,7 +1384,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
   }
 
   void _stopWakeLock() {
-    WakelockPlus.disable();
+    PlaybackWakelock.set(this, false);
     _updatePlaybackState(debugLabel: 'onVideoPaused');
   }
 
@@ -1401,7 +1411,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
           playerStatus = .playing;
           _stopWakeLockTimer();
           _updatePlaybackState();
-          WakelockPlus.enable();
+          PlaybackWakelock.set(this, true);
 
           if (_isAutoEnterPip &&
               _autoAudioState != AutoAudioOnlyState.autoAudioOnly) {
@@ -2535,8 +2545,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
   }
 
   void _interruptAutoAudioRestore() {
-    if (!_autoAudioRestoreInProgress &&
-        _autoAudioRestoreCompleter == null) {
+    if (!_autoAudioRestoreInProgress && _autoAudioRestoreCompleter == null) {
       return;
     }
     _autoAudioRestoreGeneration++;
@@ -2720,7 +2729,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     _positionListeners.clear();
     _statusListeners.clear();
     _stopWakeLockTimer();
-    WakelockPlus.disable();
+    PlaybackWakelock.set(this, false);
     if (kDebugMode) {
       debugPrint('dispose player');
     }

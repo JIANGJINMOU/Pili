@@ -4,6 +4,9 @@ import 'dart:io';
 import 'package:PiliPlus/utils/accounts.dart';
 import 'package:PiliPlus/utils/accounts/account.dart';
 import 'package:PiliPlus/utils/storage.dart';
+import 'package:PiliPlus/utils/storage_key.dart';
+import 'package:PiliPlus/http/init.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hive_ce/hive.dart';
 
@@ -23,12 +26,27 @@ void main() {
     tempDir = await Directory.systemTemp.createTemp('pilinara-account-test-');
     Hive.init(tempDir.path);
     GStorage.regAdapter();
+    GStorage.setting = await Hive.openBox('setting');
+    await GStorage.setting.put(SettingBoxKey.buvid, 'test');
+    Request();
+    Request.dio.interceptors
+      ..clear()
+      ..add(
+        InterceptorsWrapper(
+          onRequest: (options, handler) {
+            handler.resolve(
+              Response(requestOptions: options, data: {'code': -1}),
+            );
+          },
+        ),
+      );
     Accounts.account = await Hive.openBox<LoginAccount>('account');
   });
 
   setUp(() => Accounts.account.clear());
 
   tearDownAll(() async {
+    Request.dio.close(force: true);
     await Hive.close();
     await tempDir.delete(recursive: true);
   });

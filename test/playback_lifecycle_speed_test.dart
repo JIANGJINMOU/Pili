@@ -1,3 +1,4 @@
+import 'package:PiliPlus/models/common/image_type.dart';
 import 'package:PiliPlus/pages/short_video/progress_bar.dart';
 import 'package:PiliPlus/pages/short_video/fullscreen_surface.dart';
 import 'package:PiliPlus/pages/short_video/subtitle_preferences.dart';
@@ -6,6 +7,13 @@ import 'package:PiliPlus/services/ai_chat/ai_chat_service.dart';
 import 'package:PiliPlus/common/widgets/image/network_img_layer.dart';
 
 import 'dart:async';
+import 'dart:typed_data';
+
+import 'package:PiliPlus/utils/playback_wakelock.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
+// The plugin exposes this interface for native-free test fakes.
+// ignore: depend_on_referenced_packages
+import 'package:wakelock_plus_platform_interface/wakelock_plus_platform_interface.dart';
 
 import 'package:PiliPlus/pages/short_video/launch.dart';
 
@@ -44,6 +52,10 @@ Widget app(Widget home) => GetMaterialApp(
   supportedLocales: const [Locale('zh', 'CN')],
   getPages: [
     GetPage(
+      name: '/member',
+      page: () => const Scaffold(body: Text('测试UP主页')),
+    ),
+    GetPage(
       name: '/videoV',
       page: () => Scaffold(
         body: Text(
@@ -54,6 +66,17 @@ Widget app(Widget home) => GetMaterialApp(
   ],
   home: home,
 );
+
+class RecordingWakelock extends WakelockPlusPlatformInterface {
+  bool active = false;
+  @override
+  Future<void> toggle({required bool enable}) async {
+    active = enable;
+  }
+
+  @override
+  Future<bool> get enabled async => active;
+}
 
 class Feed extends ShortVideoController {
   Feed({
@@ -124,6 +147,7 @@ class Feed extends ShortVideoController {
 /// Only the native surface/engine is replaced. All page lifecycle callbacks,
 /// item state, retained-player decisions, gestures and storage are production.
 class RecordingPlayer implements Player {
+  Media? openedMedia;
   final events = RecordingStreams();
   bool playing = false;
   int opens = 0;
@@ -144,7 +168,8 @@ class RecordingPlayer implements Player {
         return null;
       case #open:
         opens++;
-        position = Duration.zero;
+        openedMedia = invocation.positionalArguments.first as Media;
+        position = openedMedia!.start ?? Duration.zero;
         return openGate?.future ?? Future<void>.value();
       case #play:
         playing = true;
@@ -204,12 +229,17 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   late Directory dir;
   final players = <RecordingPlayer>[];
+  final lock = RecordingWakelock();
+  late WakelockPlusPlatformInterface originalLock;
   setUpAll(() async {
+    originalLock = wakelockPlusPlatformInstance;
+    wakelockPlusPlatformInstance = lock;
     dir = await Directory.systemTemp.createTemp('pili-lifecycle-speed-');
     Hive.init(dir.path);
-    GStorage.setting = await Hive.openBox('setting');
-    GStorage.video = await Hive.openBox('video');
-    GStorage.localCache = await Hive.openBox('localCache');
+    // File persistence is covered by unit tests outside the fake async zone.
+    GStorage.setting = await Hive.openBox('setting', bytes: Uint8List(0));
+    GStorage.video = await Hive.openBox('video', bytes: Uint8List(0));
+    GStorage.localCache = await Hive.openBox('localCache', bytes: Uint8List(0));
     await GStorage.localCache.putAll({
       LocalCacheKey.timeStamp: DateTime.now().millisecondsSinceEpoch,
       LocalCacheKey.mixinKey: 'test',
@@ -248,6 +278,7 @@ void main() {
     }
   });
   tearDownAll(() async {
+    wakelockPlusPlatformInstance = originalLock;
     Request.dio.close(force: true);
     await Hive.close();
     await dir.delete(recursive: true);
@@ -1042,13 +1073,14 @@ void main() {
       expect(feed.items.single.aid, 99);
       expect(feed.requestedParts, [990]);
       expect(players.single.position, const Duration(seconds: 37));
+      expect(players.single.openedMedia!.start, const Duration(seconds: 37));
       expect(players.single.opens, 1);
       expect(players.single.playing, isTrue);
       expect(find.textContaining('指定视频 99'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await lifecycle(tester, AppLifecycleState.inactive);
       await lifecycle(tester, AppLifecycleState.resumed);
-      expect(players.single.seeks, 1);
+      expect(players.single.seeks, 0);
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );
@@ -1584,6 +1616,51 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  test('screen lock remains owned during player handoff', () async {
+    final ordinary = Object(), portrait = Object();
+    await PlaybackWakelock.set(ordinary, true);
+    await PlaybackWakelock.set(portrait, true);
+    await PlaybackWakelock.set(ordinary, false);
+    expect(lock.active, isTrue);
+    await PlaybackWakelock.set(portrait, false);
+    expect(lock.active, isFalse);
+  });
+
+  testWidgets(
+    'portrait owns screen lock while playing and releases in background',
+    (tester) async {
+      await mount(tester);
+      expect(lock.active, isTrue);
+      await lifecycle(tester, AppLifecycleState.inactive);
+      expect(lock.active, isTrue);
+      await lifecycle(tester, AppLifecycleState.hidden);
+      expect(lock.active, isFalse);
+      await lifecycle(tester, AppLifecycleState.resumed);
+      expect(lock.active, isTrue);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.idle();
+      expect(lock.active, isFalse);
+    },
+  );
+
+  testWidgets(
+    'forward progress with sparse native ticks cancels stale errors',
+    (tester) async {
+      await mount(tester);
+      final player = players.single;
+      player.events.errorEvents.add('recovered CDN request');
+      await tester.pump();
+      player.events.positionEvents.add(const Duration(seconds: 4));
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 7));
+      await tester.pumpAndSettle();
+      expect(players, hasLength(1));
+      expect(player.opens, 1);
+      expect(find.textContaining('recovered CDN request'), findsNothing);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
   testWidgets('buffering watchdog reloads same video at saved progress', (
     tester,
   ) async {
@@ -1593,6 +1670,8 @@ void main() {
     player.events.bufferingEvents.add(true);
     await tester.pump();
     await tester.pump(const Duration(seconds: 12));
+    expect(players, hasLength(1));
+    await tester.pump(const Duration(seconds: 18));
     await tester.pump(const Duration(seconds: 2));
     await tester.pumpAndSettle();
     expect(players, hasLength(2));
@@ -1608,7 +1687,7 @@ void main() {
     await mount(tester);
     players.single.events.errorEvents.add('offline');
     await tester.pump();
-    await lifecycle(tester, AppLifecycleState.inactive);
+    await lifecycle(tester, AppLifecycleState.hidden);
     await tester.pump(const Duration(seconds: 15));
     expect(players, hasLength(1));
     await lifecycle(tester, AppLifecycleState.resumed);
@@ -1640,10 +1719,40 @@ void main() {
       expect(player.position, const Duration(seconds: 37));
       expect(player.playing, isFalse);
       expect(find.text('480P'), findsWidgets);
+      expect(GStorage.setting.get(SettingBoxKey.defaultVideoQa), 32);
+      tester.widget<PageView>(find.byType(PageView)).controller!.jumpToPage(1);
+      await tester.pumpAndSettle();
+      expect(players.last.openedMedia!.uri, endsWith('/480'));
       await tester.pumpWidget(const SizedBox.shrink());
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('preloaded neighbour adopts newly saved quality on activation', (
+    tester,
+  ) async {
+    await tester.runAsync(
+      () => GStorage.setting.put(SettingBoxKey.shortVideoPreload, true),
+    );
+    await mount(tester, networkAllowed: () async => true);
+    await tester.pump(const Duration(milliseconds: 700));
+    await tester.pumpAndSettle();
+    expect(players, hasLength(2));
+    final neighbour = players.last;
+    expect(neighbour.openedMedia!.uri, endsWith('/720'));
+    await tester.tap(find.text('720P').hitTestable());
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('480P'));
+    await tester.pumpAndSettle();
+    tester.widget<PageView>(find.byType(PageView)).controller!.jumpToPage(1);
+    await tester.pumpAndSettle();
+    expect(neighbour.openedMedia!.uri, endsWith('/480'));
+    expect(neighbour.opens, 2);
+    expect(neighbour.playing, isTrue);
+    expect(GStorage.setting.get(SettingBoxKey.defaultVideoQa), 32);
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(tester.takeException(), isNull);
+  }, timeout: const Timeout(Duration(seconds: 45)));
 
   testWidgets(
     'drag keeps outgoing playback live and style changes retain the player',
@@ -1784,7 +1893,7 @@ void main() {
       Get.back();
       await tester.pumpAndSettle();
       final checksBeforeBackground = checks;
-      await lifecycle(tester, AppLifecycleState.inactive);
+      await lifecycle(tester, AppLifecycleState.hidden);
       await tester.pump(const Duration(seconds: 1));
       expect(checks, checksBeforeBackground);
       expect(players.every((p) => !p.playing), isTrue);
@@ -1898,8 +2007,71 @@ void main() {
     },
   );
 
+  for (final showStatusBar in [false, true]) {
+    testWidgets(
+      'notification shade insets keep portrait controls in place ($showStatusBar)',
+      (
+        tester,
+      ) async {
+        addTearDown(tester.view.resetPadding);
+        addTearDown(tester.view.resetViewPadding);
+        await tester.runAsync(
+          () => GStorage.setting.put(
+            SettingBoxKey.shortVideoShowStatusBar,
+            showStatusBar,
+          ),
+        );
+        tester.view.viewPadding = FakeViewPadding(top: showStatusBar ? 32 : 0);
+        tester.view.padding = FakeViewPadding(top: showStatusBar ? 32 : 0);
+        await mount(tester);
+        final top = find.byTooltip('搜索');
+        final bottom = find.byTooltip('关注UP主');
+        final topBefore = tester.getTopLeft(top);
+        final bottomBefore = tester.getTopLeft(bottom);
+        await lifecycle(tester, AppLifecycleState.inactive);
+        tester.view.viewPadding = const FakeViewPadding(top: 32, bottom: 24);
+        tester.view.padding = const FakeViewPadding(top: 32, bottom: 24);
+        await tester.pumpAndSettle();
+        expect(tester.getTopLeft(top), topBefore);
+        expect(tester.getTopLeft(bottom), bottomBefore);
+        expect(players.single.playing, isTrue);
+        await lifecycle(tester, AppLifecycleState.resumed);
+        expect(tester.getTopLeft(top), topBefore);
+        expect(tester.getTopLeft(bottom), bottomBefore);
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+    );
+  }
+
   testWidgets(
-    'notification shade pauses immediately, retains position and resumes same player',
+    'follow control sits at the avatar corner and replaces text button',
+    (tester) async {
+      await mount(tester);
+      final follow = find.byTooltip('关注UP主');
+      expect(follow, findsOneWidget);
+      expect(find.text('+ 关注'), findsNothing);
+      final rect = tester.getRect(follow);
+      expect(rect.width, greaterThanOrEqualTo(28));
+      expect(
+        tester.getSize(find.byKey(const ValueKey('short-video-follow-badge'))),
+        const Size(20, 20),
+      );
+      final avatars = find.byWidgetPredicate(
+        (w) => w is NetworkImgLayer && w.type == ImageType.avatar,
+      );
+      expect(avatars, findsOneWidget);
+      expect(rect.overlaps(tester.getRect(avatars)), isTrue);
+      await tester.tapAt(tester.getCenter(avatars));
+      await tester.pumpAndSettle();
+      expect(find.text('测试UP主页'), findsOneWidget);
+      Get.back<void>();
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
+    'notification shade keeps playing without reopening or seeking',
     (tester) async {
       await mount(tester);
       final player = players.single
@@ -1910,10 +2082,9 @@ void main() {
         tester.binding.handleAppLifecycleStateChanged(
           AppLifecycleState.inactive,
         );
-        // No build frame yet: background audio must still be stopped.
         await tester.idle();
-        expect(player.playing, isFalse);
-        expect(player.volume, 0);
+        expect(player.playing, isTrue);
+        expect(player.volume, greaterThan(0));
         await tester.pump();
         expect(player.disposals, 0);
         await lifecycle(tester, AppLifecycleState.resumed);
@@ -1962,12 +2133,12 @@ void main() {
   );
 
   testWidgets(
-    'background while open is pending does not recreate or autoplay behind shade',
+    'background while open is pending does not recreate or autoplay while hidden',
     (tester) async {
       final gate = Completer<void>();
       await mount(tester, openGate: gate);
       final player = players.single;
-      await lifecycle(tester, AppLifecycleState.inactive);
+      await lifecycle(tester, AppLifecycleState.hidden);
       gate.complete();
       await tester.pumpAndSettle();
       expect(player.playing, isFalse);
@@ -1984,8 +2155,9 @@ void main() {
     (tester) async {
       await mount(tester);
       final player = players.single..position = const Duration(seconds: 66);
+      await lifecycle(tester, AppLifecycleState.inactive);
+      expect(player.playing, isTrue);
       for (final state in [
-        AppLifecycleState.inactive,
         AppLifecycleState.hidden,
         AppLifecycleState.paused,
         AppLifecycleState.hidden,

@@ -29,10 +29,12 @@ class ShortVideoPreferences {
     this.danmakuArea = .45,
     this.enabled = true,
     this.autoPlay = true,
+    this.creatorPlayback = false,
     this.autoNext = false,
     this.preload = true,
     this.personalized = true,
     this.onlyVertical = false,
+    this.onlyHorizontal = false,
     this.cellularPreload = false,
     this.muted = false,
     this.subtitles = const ShortVideoSubtitlePreferences(),
@@ -80,11 +82,15 @@ class ShortVideoPreferences {
       ),
       danmakuArea: number(SettingBoxKey.shortVideoDanmakuArea, .45, .2, 1),
       enabled: flag(SettingBoxKey.shortVideoEnabled, true),
+      creatorPlayback: flag(SettingBoxKey.shortVideoCreatorPlayback, false),
       autoPlay: flag(SettingBoxKey.shortVideoAutoPlay, true),
       autoNext: flag(SettingBoxKey.shortVideoAutoNext, false),
       preload: flag(SettingBoxKey.shortVideoPreload, true),
       personalized: flag(SettingBoxKey.shortVideoPersonalized, true),
-      onlyVertical: flag(SettingBoxKey.shortVideoOnlyVertical, false),
+      onlyVertical:
+          !flag(SettingBoxKey.shortVideoOnlyHorizontal, false) &&
+          flag(SettingBoxKey.shortVideoOnlyVertical, false),
+      onlyHorizontal: flag(SettingBoxKey.shortVideoOnlyHorizontal, false),
       cellularPreload: flag(SettingBoxKey.shortVideoCellularPreload, false),
       muted: flag(SettingBoxKey.shortVideoMuted, false),
       subtitles: ShortVideoSubtitlePreferences.fromMap(values),
@@ -105,10 +111,14 @@ class ShortVideoPreferences {
   final double danmakuFont, danmakuOpacity, danmakuArea;
   final bool enabled;
   final bool autoPlay;
+  final bool creatorPlayback;
   final bool autoNext;
   final bool preload;
   final bool personalized;
   final bool onlyVertical;
+  final bool onlyHorizontal;
+  bool acceptOrientation(bool? vertical) =>
+      onlyHorizontal ? vertical == false : !onlyVertical || vertical == true;
   final bool cellularPreload;
   final bool muted;
   final ShortVideoSubtitlePreferences subtitles;

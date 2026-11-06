@@ -65,6 +65,7 @@ import 'package:PiliPlus/services/download/download_service.dart';
 import 'package:PiliPlus/services/pip_overlay_service.dart';
 import 'package:PiliPlus/utils/accounts.dart';
 import 'package:PiliPlus/utils/connectivity_utils.dart';
+import 'package:PiliPlus/utils/playback_quality.dart';
 import 'package:PiliPlus/utils/danmaku_density_trend.dart';
 import 'package:PiliPlus/utils/extension/context_ext.dart';
 import 'package:PiliPlus/utils/extension/iterable_ext.dart';
@@ -444,7 +445,7 @@ class VideoDetailController extends GetxController
       final halfScreenQa = Pref.defaultVideoQaHalfScreen;
       if (halfScreenQa == null) return;
       final isWiFi = await ConnectivityUtils.isWiFi;
-      final fsQa = isWiFi ? Pref.defaultVideoQa : Pref.defaultVideoQaCellular;
+      final fsQa = PlaybackQuality.forNetwork(isWiFi);
       final curHighestVideoQa = data.dash!.video!.first.quality.code;
       int targetQa = curHighestVideoQa;
       if (data.acceptQuality?.isNotEmpty == true && fsQa <= curHighestVideoQa) {
@@ -473,18 +474,16 @@ class VideoDetailController extends GetxController
     if (plPlayerController.tempPlayerConf) {
       return;
     }
-    final String key;
-    if (!PlatformUtils.isMobile) {
-      key = SettingBoxKey.defaultVideoQa;
-    } else if (!plPlayerController.isFullScreen.value &&
+    if (PlatformUtils.isMobile &&
+        !plPlayerController.isFullScreen.value &&
         Pref.defaultVideoQaHalfScreen != null) {
-      key = SettingBoxKey.defaultVideoQaHalfScreen;
+      await GStorage.setting.put(
+        SettingBoxKey.defaultVideoQaHalfScreen,
+        quality,
+      );
     } else {
-      key = await ConnectivityUtils.isWiFi
-          ? SettingBoxKey.defaultVideoQa
-          : SettingBoxKey.defaultVideoQaCellular;
+      await PlaybackQuality.save(quality);
     }
-    GStorage.setting.put(key, quality);
   }
 
   @override
@@ -1154,7 +1153,7 @@ class VideoDetailController extends GetxController
         plPlayerController.cacheVideoQa == null) {
       final isWiFi = netIsWiFi ?? await ConnectivityUtils.isWiFi;
       if (plPlayerController.cacheVideoQa == null) {
-        final fsQa = isWiFi ? Pref.defaultVideoQa : Pref.defaultVideoQaCellular;
+        final fsQa = PlaybackQuality.forNetwork(isWiFi);
         final halfScreenQa = Pref.defaultVideoQaHalfScreen;
         plPlayerController
           // 半屏与蜂窝是两个正交的画质上限，同时命中取较低者（docs/adr/0002）

@@ -3,7 +3,6 @@ import 'package:PiliPlus/http/loading_state.dart';
 import 'package:PiliPlus/http/msg.dart';
 import 'package:PiliPlus/models/common/dynamic/dynamics_type.dart';
 import 'package:PiliPlus/models/dynamics/result.dart';
-import 'package:PiliPlus/pages/common/common_controller.dart';
 import 'package:PiliPlus/pages/common/common_list_controller.dart';
 import 'package:PiliPlus/pages/dynamics/controller.dart';
 import 'package:PiliPlus/pages/main/controller.dart';
@@ -14,7 +13,7 @@ import 'package:get/get.dart';
 
 class DynamicsTabController
     extends CommonListController<DynamicsDataModel, DynamicItemModel>
-    with AccountMixin, RefreshImplMixin {
+    with AccountMixin {
   DynamicsTabController({required this.dynamicsType});
   final DynamicsTabType dynamicsType;
 

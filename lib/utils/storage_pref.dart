@@ -535,7 +535,7 @@ abstract final class Pref {
     }
     final source = _setting.get(SettingBoxKey.rcmdSource);
     if (source is int && source >= 0 && source < 3) {
-      return [RcmdMode.app, RcmdMode.desktop, RcmdMode.web][source];
+      return [RcmdMode.app, RcmdMode.web, RcmdMode.desktop][source];
     }
     // 旧版迁移：appRcmd true→App, false→Web
     return appRcmd ? RcmdMode.app : RcmdMode.web;

@@ -2068,22 +2068,46 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
     if (_openingShortVideo || !ShortVideoPreferences.read().enabled) return;
     _openingShortVideo = true;
     try {
+      final player =
+          plPlayerController ?? videoDetailController.plPlayerController;
       final launch = ShortVideoLaunch.fromDetail(
         detail: introController.videoDetail.value,
         aid: videoDetailController.aid,
         bvid: videoDetailController.bvid,
         cid: videoDetailController.cid.value,
-        position: Duration(
-          milliseconds: plPlayerController?.positionInMilliseconds ?? 0,
-        ),
+        position: player.handoffPosition,
       );
+      _pipRetryPending = false;
+      await player.pause();
+      if (!mounted) return;
       // Reuse a feed route, but replace its selection even if the detail page
       // has moved to a related video or a different part since it was opened.
-      if (Get.isRegistered<ShortVideoController>()) {
-        _pipRetryPending = false;
-        await plPlayerController?.pause();
-        if (!mounted) return;
-        Get.find<ShortVideoController>().startFrom(launch);
+      final feed = videoDetailController.args['shortVideoController'];
+      if (feed is ShortVideoController && !feed.isClosed ||
+          Get.isRegistered<ShortVideoController>()) {
+        final target = feed is ShortVideoController && !feed.isClosed
+            ? feed
+            : Get.find<ShortVideoController>();
+        final inSearch =
+            target.isSearchFeed &&
+            target.items.any((v) => v.aid == launch.item.aid);
+        target.startFrom(
+          ShortVideoLaunch(
+            item: launch.item,
+            position: launch.position,
+            searchFeed: inSearch ? target.searchFeed : null,
+            searchItems: inSearch
+                ? [
+                    launch.item,
+                    ...target.items.where((v) => v.aid != launch.item.aid),
+                  ]
+                : null,
+            creatorMid:
+                target.initialLaunch?.creatorMid == launch.item.owner.mid
+                ? target.initialLaunch?.creatorMid
+                : null,
+          ),
+        );
         Get.until(
           (route) => route.settings.name == '/shortVideo' || route.isFirst,
         );
@@ -2897,9 +2921,8 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
     }
 
     if (isSeason) {
-      final item = videoDetail
-          .ugcSeason!
-          .sections![ugcIntroController.sectionIndex];
+      final item =
+          videoDetail.ugcSeason!.sections![ugcIntroController.sectionIndex];
       final nextOrder = item.listOrder.next;
       _applyListOrder(
         nextOrder: nextOrder,

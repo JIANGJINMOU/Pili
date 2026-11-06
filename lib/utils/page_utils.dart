@@ -1,5 +1,7 @@
 import 'dart:math';
 
+import 'package:PiliPlus/pages/short_video/launch.dart';
+import 'package:PiliPlus/pages/short_video/preferences.dart';
 import 'package:PiliPlus/common/widgets/fractionally_sized_box.dart';
 import 'package:PiliPlus/common/widgets/image_viewer/gallery_viewer.dart';
 import 'package:PiliPlus/common/widgets/image_viewer/hero_dialog_route.dart';
@@ -546,6 +548,40 @@ abstract final class PageUtils {
     int? rootRpId,
     int? secondRpId,
   }) {
+    final prefs = ShortVideoPreferences.read();
+    final args = Get.arguments;
+    final mid = int.tryParse(
+      Get.parameters['mid'] ??
+          (args is Map ? args['mid']?.toString() : null) ??
+          '',
+    );
+    if (PlatformUtils.isMobile &&
+        prefs.enabled &&
+        prefs.creatorPlayback &&
+        videoType == VideoType.ugc &&
+        mid != null &&
+        mid > 0 &&
+        const [
+          '/member',
+          '/videoWeb',
+          '/ssWeb',
+          '/memberSearch',
+        ].contains(Uri.tryParse(Get.currentRoute)?.path)) {
+      final id = aid ?? IdUtils.bv2av(bvid!);
+      return Get.toNamed<void>(
+        '/shortVideo',
+        preventDuplicates: false,
+        arguments: ShortVideoLaunch.fromCreator(
+          mid: mid,
+          aid: id,
+          bvid: bvid ?? IdUtils.av2bv(id),
+          cid: cid,
+          title: title,
+          cover: cover,
+          position: Duration(milliseconds: progress ?? 0),
+        ),
+      );
+    }
     final arguments = {
       'aid': aid ?? IdUtils.bv2av(bvid!),
       'bvid': bvid ?? IdUtils.av2bv(aid!),

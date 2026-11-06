@@ -1,4 +1,7 @@
 import 'package:PiliPlus/pages/short_video/progress_bar.dart';
+import 'package:PiliPlus/utils/playback_wakelock.dart';
+import 'package:PiliPlus/utils/playback_quality.dart';
+import 'package:PiliPlus/pages/short_video/search_sheet.dart';
 
 import 'dart:async';
 
@@ -10,7 +13,7 @@ import 'package:PiliPlus/pages/short_video/comment_layout.dart';
 import 'package:PiliPlus/pages/short_video/subtitles.dart';
 
 import 'package:PiliPlus/pages/short_video/danmaku.dart';
-import 'package:PiliPlus/models/common/video/video_quality.dart';
+import 'package:PiliPlus/models/common/video/base_quality.dart';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 
@@ -74,11 +77,13 @@ class ShortVideoPage extends StatefulWidget {
 class _ShortVideoPageState extends State<ShortVideoPage>
     with WidgetsBindingObserver {
   late final ShortVideoController _controller;
+  String? _controllerTag;
   final PageController _pageController = PageController();
   int _currentIndex = 0;
   bool _appActive =
       WidgetsBinding.instance.lifecycleState == null ||
-      WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
+      (WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed ||
+          WidgetsBinding.instance.lifecycleState == AppLifecycleState.inactive);
   bool _muted = false;
   late ShortVideoPreferences _preferences;
   StreamSubscription<dynamic>? _settingsSubscription;
@@ -148,12 +153,17 @@ class _ShortVideoPageState extends State<ShortVideoPage>
     }, networkAllowed: _networkAllowed);
     if (_preferences.preload && _preferences.enabled) _preloader.schedule(0);
     final args = Get.arguments;
+    final launch =
+        widget.initialLaunch ?? (args is ShortVideoLaunch ? args : null);
+    if (launch?.creatorMid != null) {
+      _controllerTag = 'creator-${identityHashCode(this)}';
+    }
     _controller = Get.put(
       ShortVideoController(
         preferences: _preferences,
-        initialLaunch:
-            widget.initialLaunch ?? (args is ShortVideoLaunch ? args : null),
+        initialLaunch: launch,
       ),
+      tag: _controllerTag,
     );
     _launchWorker = ever(_controller.launchRevision, (_) {
       if (!mounted) return;
@@ -187,7 +197,10 @@ class _ShortVideoPageState extends State<ShortVideoPage>
           !previous.enabled &&
           _controller.items.isEmpty) {
         unawaited(_controller.refreshFeed());
-      } else if (previous.onlyVertical != _preferences.onlyVertical) {
+      } else if ((previous.onlyVertical != _preferences.onlyVertical ||
+              previous.onlyHorizontal != _preferences.onlyHorizontal) &&
+          !_controller.isCreatorFeed &&
+          !_controller.isSearchFeed) {
         _controller.items.clear();
         unawaited(_refresh());
       }
@@ -211,8 +224,10 @@ class _ShortVideoPageState extends State<ShortVideoPage>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    final active = state == AppLifecycleState.resumed;
-    if (active) _applySystemBars();
+    final active = state == AppLifecycleState.inactive
+        ? _appActive
+        : state == AppLifecycleState.resumed;
+    if (state == AppLifecycleState.resumed) _applySystemBars();
     if (active != _appActive && mounted) {
       setState(() => _appActive = active);
       _schedulePreload();
@@ -226,7 +241,7 @@ class _ShortVideoPageState extends State<ShortVideoPage>
     _launchWorker?.dispose();
     _preloader.dispose();
     _pageController.dispose();
-    Get.delete<ShortVideoController>();
+    Get.delete<ShortVideoController>(tag: _controllerTag);
     if (PlatformUtils.isMobile) {
       showSystemBar();
       fullMode();
@@ -319,6 +334,9 @@ class _ShortVideoPageState extends State<ShortVideoPage>
 
   @override
   Widget build(BuildContext context) {
+    final topPadding = _preferences.showStatusBar
+        ? MediaQuery.viewPaddingOf(context).top
+        : 0.0;
     if (!_preferences.enabled) {
       return Scaffold(
         backgroundColor: Colors.black,
@@ -359,7 +377,7 @@ class _ShortVideoPageState extends State<ShortVideoPage>
                   onAction: loading ? null : _refresh,
                 ),
                 Positioned(
-                  top: MediaQuery.paddingOf(context).top + 4,
+                  top: topPadding + 4,
                   left: 8,
                   child: _PortraitBackButton(onPressed: Get.back),
                 ),
@@ -441,8 +459,7 @@ class _ShortVideoPageState extends State<ShortVideoPage>
                         _preloadAllowed &&
                         index == _preloadIndex &&
                         index == _currentIndex + 1,
-                    // Losing focus (notification shade, lock screen) must pause,
-                    // not destroy the current session and reset its position.
+                    // Keep the session and position when focus is interrupted.
                     retain:
                         index == _currentIndex ||
                         ((index - _currentIndex).abs() <= 1 && _appActive),
@@ -463,7 +480,7 @@ class _ShortVideoPageState extends State<ShortVideoPage>
               ),
               if (_controller.isLoadingMore.value)
                 Positioned(
-                  top: MediaQuery.paddingOf(context).top + 58,
+                  top: topPadding + 58,
                   left: 0,
                   right: 0,
                   child: const Center(
@@ -475,7 +492,7 @@ class _ShortVideoPageState extends State<ShortVideoPage>
                 )
               else if (_controller.loadMoreError.value != null)
                 Positioned(
-                  top: MediaQuery.paddingOf(context).top + 58,
+                  top: topPadding + 58,
                   left: 0,
                   right: 0,
                   child: Center(
@@ -558,7 +575,8 @@ class _ShortVideoItemState extends State<ShortVideoItem>
   bool _retrying = false;
   int _retryAttempts = 0;
   Duration _resumePosition = Duration.zero;
-  int? _resumeQuality;
+  int? _preferredQuality;
+  Future<void>? _qualityUpdate;
 
   void _cancelRecoveryTimers() {
     _errorConfirmationTimer?.cancel();
@@ -602,7 +620,7 @@ class _ShortVideoItemState extends State<ShortVideoItem>
     }
     if (_error != null) _scheduleRecovery();
     if (_buffering && !_loading && !_retrying && _retryAttempts < 3) {
-      _stallTimer ??= Timer(const Duration(seconds: 12), () {
+      _stallTimer ??= Timer(const Duration(seconds: 30), () {
         _stallTimer = null;
         if (mounted && _canPlay && _buffering) {
           _setState(() => _error = '网络缓冲超时，请稍候或重新加载');
@@ -624,6 +642,12 @@ class _ShortVideoItemState extends State<ShortVideoItem>
   }
 
   void _trackWatch() {
+    unawaited(
+      PlaybackWakelock.set(
+        this,
+        mounted && _canPlay && (_loading || _playing || _buffering),
+      ),
+    );
     if (_profileRevision != widget.controller.profileRevision) {
       _profileRevision = widget.controller.profileRevision;
       _watch = ShortVideoWatchSession();
@@ -754,7 +778,8 @@ class _ShortVideoItemState extends State<ShortVideoItem>
   int _playbackRevision = 0;
   bool _foreground =
       WidgetsBinding.instance.lifecycleState == null ||
-      WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
+      (WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed ||
+          WidgetsBinding.instance.lifecycleState == AppLifecycleState.inactive);
   bool get _canPlay =>
       widget.active &&
       _foreground &&
@@ -818,7 +843,13 @@ class _ShortVideoItemState extends State<ShortVideoItem>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    final foreground = state == AppLifecycleState.resumed;
+    final foreground = state == AppLifecycleState.inactive
+        ? _foreground
+        : state == AppLifecycleState.resumed;
+    if (state == AppLifecycleState.inactive && _speeding) {
+      _setState(() => _speeding = false);
+      unawaited(_syncPlayback());
+    }
     if (_foreground == foreground) return;
     _foreground = foreground;
     _trackWatch();
@@ -832,6 +863,7 @@ class _ShortVideoItemState extends State<ShortVideoItem>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _cancelRecoveryTimers();
+    unawaited(PlaybackWakelock.set(this, false));
     _generation++;
     _playbackRevision++;
     _disposeSubscriptions();
@@ -856,6 +888,8 @@ class _ShortVideoItemState extends State<ShortVideoItem>
       if (_foreground && (widget.active || widget.preload)) {
         await _ensurePrepared();
       }
+      if (!mounted || revision != _playbackRevision) return;
+      if (widget.active && _foreground) await _ensurePreferredQuality();
       if (!mounted || revision != _playbackRevision) return;
       final player = _player;
       if (player == null) return;
@@ -889,6 +923,7 @@ class _ShortVideoItemState extends State<ShortVideoItem>
   }
 
   Future<void> _ensurePrepared() async {
+    if (_error != null && !_retrying) return;
     // Wait for open() even when a controller is already attached. Calling play
     // on a half-initialized preloaded player caused intermittent blank frames.
     if (_prepareFuture case final pending?) return pending;
@@ -916,10 +951,13 @@ class _ShortVideoItemState extends State<ShortVideoItem>
           .sourceFor(widget.item)
           .timeout(const Duration(seconds: 20));
       if (!_mayPrepare(generation)) return;
-      if (widget.preferences.onlyVertical &&
-          !source.isVertical &&
+      if (!widget.preferences.acceptOrientation(source.isVertical) &&
+          !widget.controller.isCreatorFeed &&
+          !widget.controller.isSearchFeed &&
           !widget.controller.isExplicitVideo(widget.item)) {
-        throw StateError('该视频不是竖向视频');
+        throw StateError(
+          widget.preferences.onlyHorizontal ? '该视频不是横屏视频' : '该视频不是竖向视频',
+        );
       }
       final handle = widget.playerPool == null
           ? await widget.playerFactory()
@@ -945,9 +983,9 @@ class _ShortVideoItemState extends State<ShortVideoItem>
       attached = true;
       _videoController = videoController;
       _source = source;
-      _selectedQuality = source.qualityUrls.containsKey(_resumeQuality)
-          ? _resumeQuality
-          : source.quality;
+      _preferredQuality = await PlaybackQuality.preferred;
+      if (!_shouldKeepPlayer(generation)) return;
+      _selectedQuality = source.qualityFor(_preferredQuality!);
       _listenTo(player);
       _setState(() => _firstFrameReady = false);
       if (videoController != null) {
@@ -968,19 +1006,14 @@ class _ShortVideoItemState extends State<ShortVideoItem>
           .open(
             Media(
               source.qualityUrls[_selectedQuality] ?? source.url,
-              extras: const {
-                'cache': 'yes',
-                'cache-secs': '6',
-                'demuxer-max-bytes': '33554432',
-              },
+              start: _resumePosition > Duration.zero ? _resumePosition : null,
+              extras: Pref.initBuffer(_baseRate),
             ),
             play: false,
           )
           .timeout(const Duration(seconds: 20));
       if (!_shouldKeepPlayer(generation)) return;
       if (_resumePosition > Duration.zero) {
-        await player.seek(_resumePosition);
-        if (!_shouldKeepPlayer(generation)) return;
         _positionNotifier.value = _resumePosition;
         _resumePosition = Duration.zero;
       }
@@ -1053,12 +1086,8 @@ class _ShortVideoItemState extends State<ShortVideoItem>
           _positionNotifier.value = value;
           // Native error/buffering events can describe a recovered CDN request.
           // Actual forward playback wins; seeks do not reset the retry budget.
-          if (_canPlay &&
-              !_loading &&
-              !_qualityBusy &&
-              delta > Duration.zero &&
-              delta <= const Duration(seconds: 2)) {
-            _healthyProgress += delta;
+          if (_canPlay && !_loading && !_qualityBusy && delta > Duration.zero) {
+            if (delta <= const Duration(seconds: 2)) _healthyProgress += delta;
             if (_buffering) _setState(() => _buffering = false);
             _pendingPlaybackError = null;
             _cancelRecoveryTimers();
@@ -1172,7 +1201,6 @@ class _ShortVideoItemState extends State<ShortVideoItem>
     }
     final position = _positionNotifier.value;
     if (position > Duration.zero) _resumePosition = position;
-    _resumeQuality = _selectedQuality ?? _resumeQuality;
     _watch = ShortVideoWatchSession();
     _reportedError = false;
     _exposed = false;
@@ -1293,14 +1321,23 @@ class _ShortVideoItemState extends State<ShortVideoItem>
       action = await showStaticPositionMenu<String>(
         context: buttonContext,
         color: Colors.black.withValues(alpha: 0.9),
-        items: const [
-          PopupMenuItem(
-            value: 'dislike',
-            child: Text('不感兴趣', style: TextStyle(color: Colors.white)),
-          ),
+        items: [
+          if (!widget.controller.isCreatorFeed &&
+              !widget.controller.isSearchFeed)
+            const PopupMenuItem(
+              value: 'dislike',
+              child: Text('不感兴趣', style: TextStyle(color: Colors.white)),
+            ),
           PopupMenuItem(
             value: 'refresh',
-            child: Text('刷新推荐', style: TextStyle(color: Colors.white)),
+            child: Text(
+              widget.controller.isSearchFeed
+                  ? '刷新搜索结果'
+                  : widget.controller.isCreatorFeed
+                  ? '刷新UP视频'
+                  : '刷新推荐',
+              style: const TextStyle(color: Colors.white),
+            ),
           ),
         ],
       );
@@ -1502,6 +1539,7 @@ class _ShortVideoItemState extends State<ShortVideoItem>
     _setState(() => _qualityBusy = true);
     widget.onPanelChanged?.call(true);
     try {
+      if (_qualityUpdate case final pending?) await pending;
       await _syncPlayback();
       if (!mounted) return;
       final selected = await showModalBottomSheet<int>(
@@ -1527,25 +1565,18 @@ class _ShortVideoItemState extends State<ShortVideoItem>
           ),
         ),
       );
-      if (!mounted ||
-          player != _player ||
-          selected == null ||
-          selected == (_selectedQuality ?? source.quality)) {
+      if (!mounted || player != _player || selected == null) {
         return;
       }
-      final position = _positionNotifier.value;
-      final previousUrl =
-          source.qualityUrls[_selectedQuality ?? source.quality] ?? source.url;
+      if (selected != (_selectedQuality ?? source.quality)) {
+        await _changeQuality(selected);
+      }
+      if (!mounted || player != _player) return;
       try {
-        await player.open(Media(source.qualityUrls[selected]!), play: false);
-        if (!mounted || player != _player) return;
-        await player.seek(position);
-        _setState(() => _selectedQuality = selected);
+        await PlaybackQuality.save(selected);
+        _preferredQuality = selected;
       } catch (_) {
-        if (!mounted || player != _player) return;
-        await player.open(Media(previousUrl), play: false);
-        await player.seek(position);
-        rethrow;
+        SmartDialog.showToast('画质已切换，默认画质保存失败');
       }
     } catch (_) {
       if (mounted) SmartDialog.showToast('清晰度切换失败，请重试');
@@ -1555,6 +1586,70 @@ class _ShortVideoItemState extends State<ShortVideoItem>
         widget.onPanelChanged?.call(false);
         await _syncPlayback();
       }
+    }
+  }
+
+  Future<void> _ensurePreferredQuality() async {
+    if (_qualityBusy || _player == null || _source == null) return;
+    if (_qualityUpdate case final pending?) return pending;
+    late final Future<void> future;
+    future =
+        (() async {
+          final player = _player;
+          final source = _source;
+          final preferred = await PlaybackQuality.preferred;
+          if (!mounted ||
+              !widget.active ||
+              _qualityBusy ||
+              player != _player ||
+              source == null ||
+              source != _source ||
+              preferred == _preferredQuality) {
+            return;
+          }
+          _preferredQuality = preferred;
+          final target = source.qualityFor(preferred);
+          if (target != _selectedQuality) {
+            // A preloaded neighbour may have opened before the user changed quality.
+            // Keep a playable fallback if upgrading that neighbour fails.
+            try {
+              await _changeQuality(target);
+            } catch (_) {}
+          }
+        })().whenComplete(() {
+          if (identical(_qualityUpdate, future)) _qualityUpdate = null;
+        });
+    _qualityUpdate = future;
+    return future;
+  }
+
+  Future<void> _changeQuality(int selected) async {
+    final source = _source;
+    final player = _player;
+    if (source == null || player == null) return;
+    final position = _positionNotifier.value;
+    final previousUrl = source.qualityUrls[_selectedQuality] ?? source.url;
+    try {
+      await player.open(
+        Media(
+          source.qualityUrls[selected]!,
+          extras: Pref.initBuffer(_baseRate),
+        ),
+        play: false,
+      );
+      if (!mounted || player != _player) return;
+      await player.seek(position);
+      if (mounted && player == _player) {
+        _setState(() => _selectedQuality = selected);
+      }
+    } catch (_) {
+      if (!mounted || player != _player) return;
+      await player.open(
+        Media(previousUrl, extras: Pref.initBuffer(_baseRate)),
+        play: false,
+      );
+      await player.seek(position);
+      rethrow;
     }
   }
 
@@ -1572,6 +1667,7 @@ class _ShortVideoItemState extends State<ShortVideoItem>
         isVertical: source.isVertical,
         progress: _positionNotifier.value.inMilliseconds,
         extraArguments: {
+          'shortVideoController': widget.controller,
           'shortVideoFullscreen': fullscreen,
           'shortVideoAutoplay': !_userPaused,
           'shortVideoOnReturn': (int cid, Duration position, bool inPip) {
@@ -1590,6 +1686,18 @@ class _ShortVideoItemState extends State<ShortVideoItem>
     if (mid == null) return;
     await _openRoute(() => Get.toNamed('/member?mid=$mid'));
   }
+
+  Future<void> _openSearch() => _openRoute(() async {
+    final launch = await showModalBottomSheet<ShortVideoLaunch>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (_) => ShortVideoSearchSheet(
+        initialQuery: widget.controller.searchQuery ?? '',
+      ),
+    );
+    if (mounted && launch != null) widget.controller.startFrom(launch);
+  });
 
   Future<void> _restoreRoutePosition() async {
     final player = _player;
@@ -1753,8 +1861,11 @@ class _ShortVideoItemState extends State<ShortVideoItem>
 
   @override
   Widget build(BuildContext context) {
-    final bottomPadding = MediaQuery.paddingOf(context).bottom;
-    final topPadding = MediaQuery.paddingOf(context).top;
+    // Transient system bars overlay playback without moving the controls.
+    const bottomPadding = 0.0;
+    final topPadding = widget.preferences.showStatusBar
+        ? MediaQuery.viewPaddingOf(context).top
+        : 0.0;
     final compact = MediaQuery.sizeOf(context).height < 720;
     // Legacy fill is ignored; cropping/stretching now requires explicit choice.
     final fit = widget.preferences.fit.fit;
@@ -2022,6 +2133,8 @@ class _ShortVideoItemState extends State<ShortVideoItem>
               left: 8,
               right: 8,
               child: _PortraitTopBar(
+                creatorFeed: widget.controller.isCreatorFeed,
+                searchQuery: widget.controller.searchQuery,
                 viewCount: _viewCount,
                 onBack: Get.back,
                 onSettings:
@@ -2033,7 +2146,7 @@ class _ShortVideoItemState extends State<ShortVideoItem>
                         ),
                       ),
                     ),
-                onSearch: () => _openRoute(() => Get.toNamed('/search')),
+                onSearch: _openSearch,
                 onMore: _openFeedMenu,
               ),
             ),
@@ -2245,6 +2358,8 @@ class _PortraitBackButton extends StatelessWidget {
 
 class _PortraitTopBar extends StatelessWidget {
   const _PortraitTopBar({
+    this.creatorFeed = false,
+    this.searchQuery,
     required this.viewCount,
     required this.onBack,
     required this.onSettings,
@@ -2257,6 +2372,8 @@ class _PortraitTopBar extends StatelessWidget {
   final VoidCallback onSettings;
   final VoidCallback onSearch;
   final ValueChanged<BuildContext> onMore;
+  final bool creatorFeed;
+  final String? searchQuery;
 
   @override
   Widget build(BuildContext context) {
@@ -2276,12 +2393,16 @@ class _PortraitTopBar extends StatelessWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Text(
-                  '推荐',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w700,
+                Flexible(
+                  child: Text(
+                    searchQuery ?? (creatorFeed ? 'UP投稿' : '推荐'),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                 ),
                 Container(
@@ -2395,29 +2516,81 @@ class _VideoDescription extends StatelessWidget {
       children: [
         Row(
           children: [
-            GestureDetector(
-              onTap: onAuthorTap,
-              child: Container(
-                width: 40,
-                height: 40,
-                padding: const EdgeInsets.all(1.5),
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: Colors.white,
-                  border: Border.all(
-                    color: const Color(0xFFFF6699),
-                    width: 1.5,
+            SizedBox(
+              width: 48,
+              height: 48,
+              child: Stack(
+                children: [
+                  GestureDetector(
+                    onTap: onAuthorTap,
+                    child: Container(
+                      width: 40,
+                      height: 40,
+                      padding: const EdgeInsets.all(1.5),
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: Colors.white,
+                        border: Border.all(
+                          color: const Color(0xFFFF6699),
+                          width: 1.5,
+                        ),
+                        boxShadow: const [
+                          BoxShadow(color: Colors.black45, blurRadius: 10),
+                        ],
+                      ),
+                      child: NetworkImgLayer(
+                        src: authorFace,
+                        width: 36,
+                        height: 36,
+                        type: ImageType.avatar,
+                      ),
+                    ),
                   ),
-                  boxShadow: const [
-                    BoxShadow(color: Colors.black45, blurRadius: 10),
-                  ],
-                ),
-                child: NetworkImgLayer(
-                  src: authorFace,
-                  width: 36,
-                  height: 36,
-                  type: ImageType.avatar,
-                ),
+                  Positioned(
+                    right: 0,
+                    bottom: 0,
+                    child: SizedBox(
+                      width: 32,
+                      height: 32,
+                      child: ClipOval(
+                        child: IconButton(
+                          padding: EdgeInsets.zero,
+                          tooltip: isFollowing ? '取消关注' : '关注UP主',
+                          onPressed: followBusy ? null : onFollow,
+                          style: IconButton.styleFrom(
+                            foregroundColor: Colors.white,
+                          ),
+                          icon: Container(
+                            key: const ValueKey('short-video-follow-badge'),
+                            width: 20,
+                            height: 20,
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFFF6699),
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: Colors.white,
+                                width: 1.2,
+                              ),
+                            ),
+                            alignment: Alignment.center,
+                            child: followBusy
+                                ? const SizedBox.square(
+                                    dimension: 10,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 1.5,
+                                      color: Colors.white,
+                                    ),
+                                  )
+                                : Icon(
+                                    isFollowing ? Icons.check : Icons.add,
+                                    size: 14,
+                                  ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
             const SizedBox(width: 9),
@@ -2435,37 +2608,6 @@ class _VideoDescription extends StatelessWidget {
                     shadows: [Shadow(blurRadius: 8, color: Colors.black87)],
                   ),
                 ),
-              ),
-            ),
-            const SizedBox(width: 9),
-            SizedBox(
-              height: 30,
-              child: FilledButton.tonal(
-                onPressed: followBusy ? null : onFollow,
-                style: FilledButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(horizontal: 14),
-                  backgroundColor: isFollowing
-                      ? Colors.white.withValues(alpha: 0.22)
-                      : const Color(0xFFFF6699),
-                  foregroundColor: Colors.white,
-                  disabledBackgroundColor: Colors.white24,
-                  visualDensity: VisualDensity.compact,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(18),
-                    side: BorderSide(
-                      color: isFollowing ? Colors.white24 : Colors.transparent,
-                    ),
-                  ),
-                ),
-                child: followBusy
-                    ? const SizedBox.square(
-                        dimension: 13,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 1.8,
-                          color: Colors.white,
-                        ),
-                      )
-                    : Text(isFollowing ? '已关注' : '+ 关注'),
               ),
             ),
           ],

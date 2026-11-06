@@ -1,10 +1,9 @@
-import 'package:PiliPlus/pages/short_video/display_preferences.dart';
+import 'package:PiliPlus/pages/setting/widgets/short_video_display_setting.dart';
 import 'package:PiliPlus/pages/short_video/controller.dart';
 import 'package:PiliPlus/pages/setting/widgets/short_video_subtitle_setting.dart';
 import 'package:PiliPlus/pages/setting/widgets/short_video_danmaku_setting.dart';
 import 'package:PiliPlus/pages/short_video/recommendation/recommendation_storage.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
-import 'package:get/get.dart';
 import 'package:PiliPlus/pages/setting/models/model.dart';
 import 'package:PiliPlus/pages/setting/widgets/fixed_speed_setting.dart';
 import 'package:PiliPlus/pages/short_video/preferences.dart';
@@ -20,6 +19,12 @@ List<SettingsModel> get shortVideoSettings => [
     leading: Icon(Icons.smart_display_outlined),
     setKey: SettingBoxKey.shortVideoEnabled,
     defaultVal: true,
+  ),
+  const SwitchModel(
+    title: 'UP主页默认竖屏播放',
+    subtitle: '点击UP主页投稿进入竖屏，上下滑动仅播放这位UP主的视频',
+    leading: Icon(Icons.person_pin_outlined),
+    setKey: SettingBoxKey.shortVideoCreatorPlayback,
   ),
   const SwitchModel(
     title: '竖屏自动播放',
@@ -45,53 +50,21 @@ List<SettingsModel> get shortVideoSettings => [
     searchSubtitle: '固定倍率 长按加速 播放速度',
     child: FixedSpeedSetting(portrait: true, switchOnly: true),
   ),
-  const WidgetModel(child: ShortVideoSettingSection('画面与手势')),
+  const WidgetModel(child: ShortVideoSettingSection('画面显示')),
+  const WidgetModel(searchTitle: '画面比例与适配', child: ShortVideoDisplaySetting()),
   const SwitchModel(
     title: '清屏播放',
-    subtitle: '默认隐藏竖屏控件；双击画面临时显示或隐藏，字幕和弹幕不受影响',
+    subtitle: '默认隐藏竖屏控件；双击画面显示或隐藏',
     leading: Icon(Icons.hide_source_outlined),
     setKey: SettingBoxKey.shortVideoCleanScreen,
   ),
   const SwitchModel(
     title: '显示系统顶部状态栏',
-    subtitle: '竖屏播放时显示时间、电量和通知图标；关闭保持沉浸播放',
+    subtitle: '显示时间、电量和通知图标；关闭保持沉浸播放',
     leading: Icon(Icons.space_dashboard_outlined),
     setKey: SettingBoxKey.shortVideoShowStatusBar,
   ),
-  PopupModel<ShortVideoAspect>(
-    title: '画面比例',
-    leading: const Icon(Icons.aspect_ratio),
-    value: () => ShortVideoPreferences.read().aspect,
-    items: ShortVideoAspect.values,
-    onSelected: (value, refresh) async {
-      try {
-        await GStorage.setting.put(SettingBoxKey.shortVideoAspect, value.name);
-        refresh();
-      } catch (_) {
-        SmartDialog.showToast('画面比例保存失败，请重试');
-      }
-    },
-  ),
-  PopupModel<ShortVideoFit>(
-    title: '画面适配',
-    leading: const Icon(Icons.fit_screen_outlined),
-    value: () => ShortVideoPreferences.read().fit,
-    items: ShortVideoFit.values,
-    onSelected: (value, refresh) async {
-      try {
-        await GStorage.setting.put(SettingBoxKey.shortVideoFit, value.name);
-        refresh();
-      } catch (_) {
-        SmartDialog.showToast('画面适配保存失败，请重试');
-      }
-    },
-  ),
-  const WidgetModel(
-    child: Padding(
-      padding: EdgeInsets.fromLTRB(16, 0, 16, 12),
-      child: Text('默认原始比例、完整显示；固定比例会改变画面宽高，铺满裁切会隐藏边缘，拉伸铺满可能变形。'),
-    ),
-  ),
+  const WidgetModel(child: ShortVideoSettingSection('手势操作')),
   PopupModel<ShortVideoSwipeStyle>(
     title: '竖屏滑动风格',
     leading: const Icon(Icons.swipe_vertical_outlined),
@@ -153,11 +126,9 @@ List<SettingsModel> get shortVideoSettings => [
     setKey: SettingBoxKey.shortVideoPersonalized,
     defaultVal: true,
   ),
-  const SwitchModel(
-    title: '仅竖向视频',
-    subtitle: '只推荐元数据已标明竖向的视频；可能减少可用内容',
-    leading: Icon(Icons.stay_current_portrait_outlined),
-    setKey: SettingBoxKey.shortVideoOnlyVertical,
+  const WidgetModel(
+    searchTitle: '推荐视频方向 全部 仅横屏视频 仅竖屏 仅竖向视频',
+    child: ShortVideoOrientationSetting(),
   ),
   const SwitchModel(
     title: '允许移动网络预加载',
@@ -189,8 +160,12 @@ List<SettingsModel> get shortVideoSettings => [
       );
       if (confirmed != true) return;
       try {
-        if (Get.isRegistered<ShortVideoController>()) {
-          await Get.find<ShortVideoController>().clearProfile();
+        if (ShortVideoController.instances.isNotEmpty) {
+          await Future.wait(
+            ShortVideoController.instances.toList().map(
+              (c) => c.clearProfile(),
+            ),
+          );
         } else {
           await RecommendationStorage().clear();
         }

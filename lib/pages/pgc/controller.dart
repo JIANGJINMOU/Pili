@@ -5,8 +5,6 @@ import 'package:PiliPlus/models/common/home_tab_type.dart';
 import 'package:PiliPlus/models_new/fav/fav_pgc/list.dart';
 import 'package:PiliPlus/models_new/pgc/pgc_index_result/list.dart';
 import 'package:PiliPlus/models_new/pgc/pgc_timeline/result.dart';
-import 'package:PiliPlus/pages/common/common_controller.dart'
-    show RefreshImplMixin;
 import 'package:PiliPlus/pages/common/common_list_controller.dart';
 import 'package:PiliPlus/services/account_service.dart';
 import 'package:PiliPlus/utils/extension/scroll_controller_ext.dart';
@@ -16,7 +14,7 @@ import 'package:get/get.dart';
 
 class PgcController
     extends CommonListController<List<PgcIndexItem>?, PgcIndexItem>
-    with AccountMixin, RefreshImplMixin {
+    with AccountMixin {
   PgcController({required this.tabType})
     : indexType = tabType == HomeTabType.cinema ? 102 : null;
 
