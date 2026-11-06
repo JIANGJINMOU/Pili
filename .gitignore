@@ -175,3 +175,4 @@ test*
 !/test/short_video_recommendation_test.dart
 !/docs/short-video-recommendation.md
 !/docs/android-build.md
+!/test/**

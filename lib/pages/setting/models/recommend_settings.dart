@@ -237,7 +237,14 @@ Future<void> _showRcmdModeDialog(
   );
   if (res != null) {
     await GStorage.setting.put(SettingBoxKey.rcmdMode, res.index);
-    SmartDialog.showToast('重启生效');
+    try {
+      Get.find<RcmdController>()
+        ..rcmdMode = res
+        ..onReload();
+    } catch (e) {
+      if (kDebugMode) debugPrint('$e');
+    }
+    SmartDialog.showToast('已切换为${res.label}');
     setState();
   }
 }

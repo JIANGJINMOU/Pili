@@ -1139,9 +1139,7 @@ class VideoDetailController extends GetxController
     bool? netIsWiFi;
     if (!_autoPlayNetworkChecked) {
       _autoPlayNetworkChecked = true;
-      if (PlatformUtils.isMobile &&
-          _autoPlay.value &&
-          Pref.autoPlayWifiOnly) {
+      if (PlatformUtils.isMobile && _autoPlay.value && Pref.autoPlayWifiOnly) {
         netIsWiFi = await ConnectivityUtils.isWiFi;
         if (!netIsWiFi) {
           _autoPlay.value = false;
@@ -1160,7 +1158,9 @@ class VideoDetailController extends GetxController
         final halfScreenQa = Pref.defaultVideoQaHalfScreen;
         plPlayerController
           // 半屏与蜂窝是两个正交的画质上限，同时命中取较低者（docs/adr/0002）
-          ..cacheVideoQa = !shortVideoFullscreen && !plPlayerController.isFullScreen.value &&
+          ..cacheVideoQa =
+              !shortVideoFullscreen &&
+                  !plPlayerController.isFullScreen.value &&
                   halfScreenQa != null
               ? min(halfScreenQa, fsQa)
               : fsQa

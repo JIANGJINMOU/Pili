@@ -137,7 +137,9 @@ class _SettingPageState extends State<SettingPage> {
                   Expanded(
                     flex: 6,
                     child: switch (_type) {
-                      .dynamicsSetting => const DynamicsSetting(showAppBar: false),
+                      .dynamicsSetting => const DynamicsSetting(
+                        showAppBar: false,
+                      ),
                       .replySetting => const ReplySetting(showAppBar: false),
                       .privacySetting ||
                       .recommendSetting ||

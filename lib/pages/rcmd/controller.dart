@@ -10,7 +10,7 @@ import 'package:PiliPlus/utils/storage_pref.dart';
 
 class RcmdController extends CommonListController {
   late bool enableSaveLastData = Pref.enableSaveLastData;
-  final RcmdMode rcmdMode = Pref.rcmdMode;
+  RcmdMode rcmdMode = Pref.rcmdMode;
   bool get appRcmd => rcmdMode == RcmdMode.app;
 
   int? lastRefreshAt;
@@ -36,6 +36,9 @@ class RcmdController extends CommonListController {
     if (rcmdMode != RcmdMode.merged) {
       // 单源模式
       _isFirstPage = (page == 0);
+      if (rcmdMode == RcmdMode.desktop) {
+        return VideoHttp.rcmdVideoList(freshIdx: page, ps: 30, desktop: true);
+      }
       return appRcmd
           ? VideoHttp.rcmdVideoListApp(freshIdx: page)
           : VideoHttp.rcmdVideoList(freshIdx: page, ps: 20);
@@ -120,5 +123,12 @@ class RcmdController extends CommonListController {
     _appPage = 0; // 重置 App 端页码
     isEnd = false;
     return queryData();
+  }
+
+  @override
+  Future<void> onReload() {
+    loadingState.value = const LoadingState.loading();
+    lastRefreshAt = null;
+    return onRefresh();
   }
 }

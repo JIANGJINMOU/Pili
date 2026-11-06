@@ -99,8 +99,7 @@ class DynamicsController
   }
 
   @override
-  Future<void> showRefresh() =>
-      _showRefreshFor(controller);
+  Future<void> showRefresh() => _showRefreshFor(controller);
 
   Future<void> _showRefreshFor(DynamicsTabController? ctr) {
     final refreshState = ctr?.refreshKey.currentState;
@@ -133,7 +132,7 @@ class DynamicsController
         EasyThrottle.throttle(
           'topOrRefresh',
           const Duration(milliseconds: 500),
-          onRefresh,
+          showRefresh,
         );
       } else {
         animateToTop();

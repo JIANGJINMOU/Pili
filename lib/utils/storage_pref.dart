@@ -533,6 +533,10 @@ abstract final class Pref {
     if (index != null) {
       return RcmdMode.values.elementAtOrNull(index) ?? RcmdMode.app;
     }
+    final source = _setting.get(SettingBoxKey.rcmdSource);
+    if (source is int && source >= 0 && source < 3) {
+      return [RcmdMode.app, RcmdMode.desktop, RcmdMode.web][source];
+    }
     // 旧版迁移：appRcmd true→App, false→Web
     return appRcmd ? RcmdMode.app : RcmdMode.web;
   }
@@ -1699,8 +1703,10 @@ abstract final class Pref {
 
   /// 思考强度（reasoning_effort）：未干预服务商默认行为时为 'default'。
   static String get aiReasoningEffort {
-    final value =
-        _setting.get(SettingBoxKey.aiReasoningEffort, defaultValue: 'default');
+    final value = _setting.get(
+      SettingBoxKey.aiReasoningEffort,
+      defaultValue: 'default',
+    );
     return value == 'auto' ? 'default' : value;
   }
 
@@ -1809,4 +1815,7 @@ abstract final class Pref {
 
   static bool get filterIntro =>
       _setting.get(SettingBoxKey.filterIntro, defaultValue: false);
+
+  static bool get showRefreshFAB =>
+      _setting.get(SettingBoxKey.showRefreshFAB, defaultValue: true);
 }
